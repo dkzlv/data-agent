@@ -2,6 +2,7 @@ import { Hono } from "hono";
 import { cors } from "hono/cors";
 import { logger } from "hono/logger";
 import { createAuth } from "./auth";
+import { chatsRouter } from "./routes/chats";
 import { dbProfilesRouter } from "./routes/db-profiles";
 import type { RequestSession } from "./session";
 import type { Env } from "./env";
@@ -43,11 +44,11 @@ app.on(["GET", "POST"], "/api/auth/*", async (c) => {
 // API surface — handlers land in later subtasks.
 const api = new Hono<{ Bindings: Bindings; Variables: Variables }>();
 
-api.get("/chats", (c) => c.json({ todo: "b1f5fd" }, 501));
-api.post("/chats", (c) => c.json({ todo: "b1f5fd" }, 501));
-api.get("/chats/:id", (c) => c.json({ todo: "b1f5fd", id: c.req.param("id") }, 501));
+// WS upgrade route is mounted before the CRUD router so it takes precedence.
+// Real impl in subtask e1a679.
 api.get("/chats/:id/ws", (c) => c.json({ todo: "e1a679", id: c.req.param("id") }, 501));
 
+api.route("/chats", chatsRouter);
 api.route("/db-profiles", dbProfilesRouter);
 
 app.route("/api", api);

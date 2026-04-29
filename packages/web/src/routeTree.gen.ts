@@ -14,6 +14,7 @@ import { Route as AppRouteImport } from "./routes/app";
 import { Route as IndexRouteImport } from "./routes/index";
 import { Route as AppIndexRouteImport } from "./routes/app.index";
 import { Route as AppDbProfilesRouteImport } from "./routes/app.db-profiles";
+import { Route as AppChatsChatIdRouteImport } from "./routes/app.chats.$chatId";
 
 const LoginRoute = LoginRouteImport.update({
   id: "/login",
@@ -40,6 +41,11 @@ const AppDbProfilesRoute = AppDbProfilesRouteImport.update({
   path: "/db-profiles",
   getParentRoute: () => AppRoute,
 } as any);
+const AppChatsChatIdRoute = AppChatsChatIdRouteImport.update({
+  id: "/chats/$chatId",
+  path: "/chats/$chatId",
+  getParentRoute: () => AppRoute,
+} as any);
 
 export interface FileRoutesByFullPath {
   "/": typeof IndexRoute;
@@ -47,12 +53,14 @@ export interface FileRoutesByFullPath {
   "/login": typeof LoginRoute;
   "/app/db-profiles": typeof AppDbProfilesRoute;
   "/app/": typeof AppIndexRoute;
+  "/app/chats/$chatId": typeof AppChatsChatIdRoute;
 }
 export interface FileRoutesByTo {
   "/": typeof IndexRoute;
   "/login": typeof LoginRoute;
   "/app/db-profiles": typeof AppDbProfilesRoute;
   "/app": typeof AppIndexRoute;
+  "/app/chats/$chatId": typeof AppChatsChatIdRoute;
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport;
@@ -61,13 +69,14 @@ export interface FileRoutesById {
   "/login": typeof LoginRoute;
   "/app/db-profiles": typeof AppDbProfilesRoute;
   "/app/": typeof AppIndexRoute;
+  "/app/chats/$chatId": typeof AppChatsChatIdRoute;
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath;
-  fullPaths: "/" | "/app" | "/login" | "/app/db-profiles" | "/app/";
+  fullPaths: "/" | "/app" | "/login" | "/app/db-profiles" | "/app/" | "/app/chats/$chatId";
   fileRoutesByTo: FileRoutesByTo;
-  to: "/" | "/login" | "/app/db-profiles" | "/app";
-  id: "__root__" | "/" | "/app" | "/login" | "/app/db-profiles" | "/app/";
+  to: "/" | "/login" | "/app/db-profiles" | "/app" | "/app/chats/$chatId";
+  id: "__root__" | "/" | "/app" | "/login" | "/app/db-profiles" | "/app/" | "/app/chats/$chatId";
   fileRoutesById: FileRoutesById;
 }
 export interface RootRouteChildren {
@@ -113,17 +122,26 @@ declare module "@tanstack/react-router" {
       preLoaderRoute: typeof AppDbProfilesRouteImport;
       parentRoute: typeof AppRoute;
     };
+    "/app/chats/$chatId": {
+      id: "/app/chats/$chatId";
+      path: "/chats/$chatId";
+      fullPath: "/app/chats/$chatId";
+      preLoaderRoute: typeof AppChatsChatIdRouteImport;
+      parentRoute: typeof AppRoute;
+    };
   }
 }
 
 interface AppRouteChildren {
   AppDbProfilesRoute: typeof AppDbProfilesRoute;
   AppIndexRoute: typeof AppIndexRoute;
+  AppChatsChatIdRoute: typeof AppChatsChatIdRoute;
 }
 
 const AppRouteChildren: AppRouteChildren = {
   AppDbProfilesRoute: AppDbProfilesRoute,
   AppIndexRoute: AppIndexRoute,
+  AppChatsChatIdRoute: AppChatsChatIdRoute,
 };
 
 const AppRouteWithChildren = AppRoute._addFileChildren(AppRouteChildren);

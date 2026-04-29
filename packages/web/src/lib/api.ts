@@ -81,3 +81,32 @@ export const dbProfilesApi = {
     api.post<{ ok: boolean; error: string | null }>(`/api/db-profiles/${id}/test`, {}),
   remove: (id: string) => api.del<{ ok: true }>(`/api/db-profiles/${id}`),
 };
+
+export type Chat = {
+  id: string;
+  title: string;
+  dbProfileId: string | null;
+  createdAt: string;
+  updatedAt: string;
+  archivedAt: string | null;
+};
+
+export type ChatMember = {
+  userId: string;
+  role: "owner" | "participant";
+  addedAt: string;
+  name: string;
+  email: string;
+};
+
+export const chatsApi = {
+  list: () => api.get<{ chats: Chat[] }>("/api/chats"),
+  create: (input: { title?: string; dbProfileId?: string }) =>
+    api.post<{ chat: Chat }>("/api/chats", input),
+  get: (id: string) =>
+    api.get<{ chat: Chat; members: ChatMember[]; myRole: "owner" | "participant" }>(
+      `/api/chats/${id}`
+    ),
+  patch: (id: string, input: { title?: string; dbProfileId?: string | null; archive?: boolean }) =>
+    api.patch<{ chat: Chat }>(`/api/chats/${id}`, input),
+};
