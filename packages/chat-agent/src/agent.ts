@@ -1,6 +1,10 @@
+import { callable } from "agents";
 import { Think } from "@cloudflare/think";
 import { Workspace } from "@cloudflare/shell";
-import type { LanguageModel } from "ai";
+import { stateTools } from "@cloudflare/shell/workers";
+import { DynamicWorkerExecutor } from "@cloudflare/codemode";
+import { createCodeTool } from "@cloudflare/codemode/ai";
+import type { LanguageModel, ToolSet } from "ai";
 import { createWorkersAI } from "workers-ai-provider";
 import type { Env } from "./env";
 
@@ -10,15 +14,20 @@ import type { Env } from "./env";
  */
 const DEFAULT_MODEL = "@cf/moonshotai/kimi-k2.6";
 
-/**
- * One ChatAgent instance per chat (DO id = chatId). Hosts:
- *   - message persistence + agentic loop (via Think)
- *   - virtual filesystem workspace (DO SQLite + R2 spillover, via @cloudflare/shell)
- *   - LLM via Workers AI (no third-party keys)
- *
- * Tools (db.*, chart.*, artifact.*) and Code Mode wiring land in later subtasks.
- * For now this is the minimal Think subclass + a healthcheck RPC method.
- */
+const SYSTEM_PROMPT = `You are a data analyst inside a chat. The user has a workspace with files you can read/write, and (in later turns) a Postgres database connected via tools.
+
+You have ONE tool: \`codemode\`. To do anything, write a small async TypeScript arrow function that uses the available APIs and returns the result.
+
+Available APIs inside codemode:
+- \`state.*\` — workspace filesystem (readFile, writeFile, readDir, mkdir, exists, …)
+
+Workflow:
+- Think briefly, then write code that does the work.
+- Always show your reasoning + the code in the final answer.
+- Be concise.
+
+Refuse to do anything outside the data-analysis scope.`;
+
 export class ChatAgent extends Think<Env> {
   override workspace = new Workspace({
     sql: this.ctx.storage.sql,
@@ -31,7 +40,25 @@ export class ChatAgent extends Think<Env> {
     return workersai(DEFAULT_MODEL);
   }
 
-  /** Simple RPC method, callable from api-gateway via service binding for smoke tests. */
+  override getSystemPrompt(): string {
+    return SYSTEM_PROMPT;
+  }
+
+  override getTools(): ToolSet {
+    const executor = new DynamicWorkerExecutor({
+      loader: this.env.LOADER as never,
+      timeout: 30_000,
+      globalOutbound: null,
+    });
+    const codemode = createCodeTool({
+      tools: [stateTools(this.workspace)],
+      executor,
+    });
+    return { codemode };
+  }
+
+  /** Simple RPC method for service-binding smoke tests. */
+  @callable()
   async healthcheck() {
     return {
       ok: true,
