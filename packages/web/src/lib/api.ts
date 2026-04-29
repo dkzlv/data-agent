@@ -99,6 +99,17 @@ export type ChatMember = {
   email: string;
 };
 
+export type ArtifactSummary = {
+  id: string;
+  name: string;
+  mime: string;
+  kind: "file" | "chart" | "table";
+  url: string;
+  createdAt: string;
+  size: number;
+  chartType?: string;
+};
+
 export const chatsApi = {
   list: () => api.get<{ chats: Chat[] }>("/api/chats"),
   create: (input: { title?: string; dbProfileId?: string }) =>
@@ -109,4 +120,6 @@ export const chatsApi = {
     ),
   patch: (id: string, input: { title?: string; dbProfileId?: string | null; archive?: boolean }) =>
     api.patch<{ chat: Chat }>(`/api/chats/${id}`, input),
+  listArtifacts: (id: string) =>
+    api.get<{ artifacts: ArtifactSummary[] }>(`/api/chats/${id}/artifacts`),
 };

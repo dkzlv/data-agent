@@ -211,14 +211,39 @@ export class ChatAgent extends Think<Env> {
    */
   override async onRequest(request: Request): Promise<Response> {
     const url = new URL(request.url);
-    // Path looks like /agents/chat-agent/<chatId>/artifacts/<id> after the
-    // SDK has dispatched to us. We strip everything up to the chat name.
+    // Path looks like /agents/chat-agent/<chatId>/... after the SDK has
+    // dispatched to us. parts = ["agents", "chat-agent", <chatId>, ...].
     const parts = url.pathname.split("/").filter(Boolean);
-    // parts: ["agents", "chat-agent", <chatId>, "artifacts", <id>]
-    if (parts[3] === "artifacts" && parts[4]) {
-      return this.serveArtifact(parts[4]);
+    if (parts[3] === "artifacts") {
+      if (parts[4]) return this.serveArtifact(parts[4]);
+      return this.serveArtifactList();
     }
     return new Response("not found", { status: 404 });
+  }
+
+  private async serveArtifactList(): Promise<Response> {
+    try {
+      const manifestText = await this.workspace.readFile("/artifacts/_manifest.json");
+      if (!manifestText) {
+        return Response.json({ artifacts: [] });
+      }
+      const manifest = JSON.parse(manifestText) as {
+        artifacts?: {
+          id: string;
+          name: string;
+          kind?: string;
+          mime?: string;
+          size?: number;
+          createdAt?: string;
+          chartType?: string;
+          url?: string;
+        }[];
+      };
+      return Response.json({ artifacts: manifest.artifacts ?? [] });
+    } catch (err) {
+      console.warn("serveArtifactList failed", { chatId: this.name, err: (err as Error).message });
+      return Response.json({ artifacts: [] });
+    }
   }
 
   private async serveArtifact(artifactId: string): Promise<Response> {

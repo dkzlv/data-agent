@@ -94,6 +94,43 @@ wsRouter.get("/chats/:id/ws", requireSession(), async (c) => {
 });
 
 /**
+ * Artifact list — `GET /api/chats/:id/artifacts`.
+ *
+ * Returns the chat's artifact manifest (newest first). Used by the
+ * workspace sidebar in the chat UI.
+ */
+wsRouter.get("/chats/:id/artifacts", requireSession(), async (c) => {
+  const chatId = c.req.param("id");
+  const { user, tenantId, db } = c.var.session;
+
+  const [member] = await db
+    .select({ role: schema.chatMember.role })
+    .from(schema.chatMember)
+    .innerJoin(schema.chat, eq(schema.chat.id, schema.chatMember.chatId))
+    .where(
+      and(
+        eq(schema.chatMember.chatId, chatId),
+        eq(schema.chatMember.userId, user.id),
+        eq(schema.chat.tenantId, tenantId)
+      )
+    )
+    .limit(1);
+  if (!member) return c.json({ error: "forbidden" }, 403);
+
+  const signingKey = await readSecret(c.env.INTERNAL_JWT_SIGNING_KEY);
+  const token = await mintChatToken(signingKey, { userId: user.id, chatId, tenantId });
+
+  // Forward to chat-agent's manifest endpoint.
+  const orig = new URL(c.req.url);
+  const forwardUrl = new URL(`/agents/chat-agent/${encodeURIComponent(chatId)}/artifacts`, orig);
+  const fwdHeaders = new Headers(c.req.raw.headers);
+  fwdHeaders.set("Authorization", `Bearer ${token}`);
+  fwdHeaders.delete("cookie");
+  const fwdReq = new Request(forwardUrl, { method: "GET", headers: fwdHeaders, body: null });
+  return c.env.CHAT_AGENT.fetch(fwdReq);
+});
+
+/**
  * Artifact bytes proxy — `GET /api/chats/:id/artifacts/:artifactId`.
  *
  * Validates session + chat membership, mints a chat token, and forwards
