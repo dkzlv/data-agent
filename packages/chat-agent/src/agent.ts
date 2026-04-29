@@ -9,6 +9,7 @@ import { createWorkersAI } from "workers-ai-provider";
 import { getDataDb, resetDataDb, type AgentLike, type CachedHandle } from "./data-db";
 import { artifactTools, chartTools } from "./tools/artifact-tools";
 import { dbTools } from "./tools/db-tools";
+import { vegaLiteTools } from "./tools/vega-lite-tools";
 import type { Env } from "./env";
 
 /**
@@ -25,6 +26,9 @@ Available APIs inside codemode:
 - \`db.introspect()\` — schema snapshot (tables, columns, FKs, est. rows). Always call this first if you don't know the schema.
 - \`db.query(sql, params?)\` — read-only SELECT/WITH/EXPLAIN. Use \`$1\`, \`$2\` placeholders; never interpolate values into the SQL string. Results are auto-capped at 5000 rows / 4 MB / 15 s.
 - \`state.*\` — workspace filesystem (readFile, writeFile, readDir, mkdir, exists, …) for caching analysis between turns.
+- \`artifact.save(name, content, mime?)\` / \`artifact.read(name)\` / \`artifact.list()\` — durable named outputs (markdown summaries, csv exports, etc).
+- \`chart.bar / .line / .scatter / .histogram / .spec\` — produce a Vega-Lite chart artifact. Prefer the typed helpers; only use \`chart.spec({ spec })\` for layouts the helpers can't express.
+- \`vegaLite.validate(spec)\` / \`.schemaUrl()\` / \`.exampleBar()\` etc. — for hand-rolling specs.
 
 Workflow:
 - Think briefly, then write code that does the work.
@@ -115,6 +119,7 @@ export class ChatAgent extends Think<Env> {
         dbTools(() => getDataDb(host)),
         artifactTools(this),
         chartTools(this),
+        vegaLiteTools(),
       ],
       executor,
     });
