@@ -89,9 +89,7 @@ describe("TurnLogger.event", () => {
     const provider = new StubProvider("c", "t", null, null);
     const log = new TurnLogger(fakeEnv, provider);
     log.event("e", { tenantId: "override" });
-    expect(logEventSpy).toHaveBeenLastCalledWith(
-      expect.objectContaining({ tenantId: "override" })
-    );
+    expect(logEventSpy).toHaveBeenLastCalledWith(expect.objectContaining({ tenantId: "override" }));
   });
 });
 
@@ -128,19 +126,13 @@ describe("TurnLogger.audit", () => {
     const provider = new StubProvider("c", "t", "u_real", null);
     const log = new TurnLogger(fakeEnv, provider);
     log.audit("turn.start", null, null, "u_other");
-    expect(auditSpy).toHaveBeenCalledWith(
-      fakeEnv,
-      expect.objectContaining({ userId: "u_other" })
-    );
+    expect(auditSpy).toHaveBeenCalledWith(fakeEnv, expect.objectContaining({ userId: "u_other" }));
   });
 
   it("preserves null user when override is explicitly null", () => {
     const provider = new StubProvider("c", "t", "u_real", null);
     const log = new TurnLogger(fakeEnv, provider);
     log.audit("turn.start", null, null, null);
-    expect(auditSpy).toHaveBeenCalledWith(
-      fakeEnv,
-      expect.objectContaining({ userId: null })
-    );
+    expect(auditSpy).toHaveBeenCalledWith(fakeEnv, expect.objectContaining({ userId: null }));
   });
 });

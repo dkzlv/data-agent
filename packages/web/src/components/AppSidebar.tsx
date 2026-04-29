@@ -20,14 +20,7 @@
  */
 import { Link, useNavigate, useRouterState } from "@tanstack/react-router";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import {
-  ChevronRight,
-  Database,
-  LogOut,
-  MessageSquare,
-  Plus,
-  Sparkles,
-} from "lucide-react";
+import { ChevronRight, Database, LogOut, MessageSquare, Plus, Sparkles } from "lucide-react";
 import { authClient } from "~/lib/auth-client";
 import { chatsApi, dbProfilesApi, type Chat } from "~/lib/api";
 import { isSampleProfile } from "~/lib/sample-db";
@@ -181,7 +174,11 @@ function SidebarChatList({ onNavigate }: { onNavigate?: () => void }) {
           <ul className="space-y-0.5">
             {chats.data.map((c) => (
               <li key={c.id}>
-                <ChatLinkRow chat={c} active={router === `/app/chats/${c.id}`} onNavigate={onNavigate} />
+                <ChatLinkRow
+                  chat={c}
+                  active={router === `/app/chats/${c.id}`}
+                  onNavigate={onNavigate}
+                />
               </li>
             ))}
           </ul>
@@ -306,11 +303,7 @@ function NewChatLauncher({ onNavigate }: { onNavigate?: () => void }) {
         </DropdownMenuLabel>
         <DropdownMenuSeparator />
         {list.map((p) => (
-          <DropdownMenuItem
-            key={p.id}
-            onSelect={() => create.mutate(p.id)}
-            className="gap-2"
-          >
+          <DropdownMenuItem key={p.id} onSelect={() => create.mutate(p.id)} className="gap-2">
             {isSampleProfile(p) ? (
               <Sparkles className="h-3.5 w-3.5 shrink-0 text-primary" />
             ) : (

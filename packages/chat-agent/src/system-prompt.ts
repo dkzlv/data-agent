@@ -40,6 +40,22 @@ export interface ChatContext {
     name: string;
     email: string;
   };
+  /**
+   * Recalled facts from past chats with the same dbProfile (task
+   * a0e754). Populated by `agent.beforeTurn` after the retrieve
+   * pipeline runs; rendered as a `## Recalled facts` block. Order
+   * matches the post-rerank order — first item is most relevant.
+   *
+   * Always omitted when:
+   *   - no dbProfile is attached, or
+   *   - the recall pipeline produced zero usable facts, or
+   *   - the embedding / Vectorize call failed (memory degrades
+   *     silently — see `retrieve.ts`).
+   */
+  recalledFacts?: ReadonlyArray<{
+    kind: string;
+    content: string;
+  }>;
 }
 
 const PERSONA = `# data-agent
@@ -78,6 +94,13 @@ For data questions:
 5. Save longer-form answers as a markdown artifact with \`artifact.save("findings.md", "...", "text/markdown")\`.
 
 For follow-up turns, prefer \`state.readFile/writeFile\` to remember intermediate computations across the chat — the workspace persists for the lifetime of the chat.
+
+## Memory across chats
+
+This database has a durable, cross-chat memory. Two surfaces:
+
+- A \`## Recalled facts\` block (when present, below) lists facts the system already pulled in from prior chats with this DB. Treat them as ground truth and lean on them — don't re-derive what's already known. They are scoped to this database and were saved by past turns.
+- The \`memory.*\` namespace lets you persist new facts. Use it when the user tells you something that will matter on later turns or in *future chats*: schema clarifications ("orders.total_cents is in cents not dollars"), business definitions ("MRR = sum(active_subscriptions.amount)"), preferences ("always exclude test tenants"), good query patterns, entity mappings ("Acme = customer 1234"). Keep facts short (10–500 chars), self-contained, and de-contextualized — write them so a future you, with no memory of this chat, would understand them at a glance. Don't save one-off requests; save the *general knowledge* you'd want to reuse. Use \`memory.forget(idOrContent)\` if the user corrects something you previously saved. Use \`memory.search(query)\` to pull additional context if the recalled-facts block didn't include what you need.
 
 If a query times out (\`statement timeout\` / \`canceling statement due to statement timeout\`), don't keep retrying the same shape. Instead:
 1. Briefly tell the user the query was too expensive and you're simplifying.
@@ -130,9 +153,30 @@ function renderContext(ctx: ChatContext | undefined): string {
   return lines.join("\n");
 }
 
+/**
+ * Render the recalled-facts block. Bulleted list with a `[kind]`
+ * prefix so the model can scan by category. Returns an empty string
+ * when nothing was recalled — caller filters empties out of the
+ * final prompt assembly.
+ *
+ * Why so terse? The block lands in *every turn's* system prompt
+ * once memory is populated, so verbose phrasing inflates the input
+ * token cost across every interaction with this DB. Five-word
+ * preamble + bullets is the sweet spot.
+ */
+function renderRecalledFacts(ctx: ChatContext | undefined): string {
+  const facts = ctx?.recalledFacts;
+  if (!facts || facts.length === 0) return "";
+  const bullets = facts.map((f) => `- [${f.kind}] ${f.content}`);
+  return ["## Recalled facts (from past chats with this database)", ...bullets].join("\n");
+}
+
 export function buildSystemPrompt(ctx?: ChatContext): string {
   const ctxBlock = renderContext(ctx);
-  return [PERSONA, HOW_TO_WORK, OUTPUT_STYLE, SAFETY, ctxBlock].filter(Boolean).join("\n\n");
+  const recalled = renderRecalledFacts(ctx);
+  return [PERSONA, HOW_TO_WORK, OUTPUT_STYLE, SAFETY, ctxBlock, recalled]
+    .filter(Boolean)
+    .join("\n\n");
 }
 
 /** @internal — exported for tests; do not call from runtime code. */

@@ -70,6 +70,17 @@
     }
   ],
 
+  // Cross-chat memory (task a0e754). Shared with chat-agent — the
+  // gateway needs the binding to scrub vectors on DELETE /api/memory/:id
+  // (otherwise an orphan vector lingers until the periodic sweep).
+  // Same index name + namespacing as chat-agent.
+  "vectorize": [
+    {
+      "binding": "VECTORIZE_MEMORY",
+      "index_name": "data-agent-memory"
+    }
+  ],
+
   "services": [
     {
       "binding": "CHAT_AGENT",

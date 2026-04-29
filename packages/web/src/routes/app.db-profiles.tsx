@@ -1,7 +1,7 @@
-import { createFileRoute } from "@tanstack/react-router";
+import { createFileRoute, Link } from "@tanstack/react-router";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
-import { Plus, Trash2 } from "lucide-react";
+import { BookOpen, Plus, Trash2 } from "lucide-react";
 import { dbProfilesApi, type DbProfile } from "~/lib/api";
 import { Button } from "~/components/ui/button";
 import { Input } from "~/components/ui/input";
@@ -26,64 +26,64 @@ function DbProfilesRoute() {
 
   return (
     <AppPageScroll>
-    <div className="mx-auto max-w-4xl space-y-6">
-      <header className="flex items-center justify-between gap-3">
-        <div className="flex items-center gap-2">
-          <AppMobileNavTrigger />
-          <div>
-            <h1 className="text-2xl font-semibold tracking-tight">Database connections</h1>
+      <div className="mx-auto max-w-4xl space-y-6">
+        <header className="flex items-center justify-between gap-3">
+          <div className="flex items-center gap-2">
+            <AppMobileNavTrigger />
+            <div>
+              <h1 className="text-2xl font-semibold tracking-tight">Database connections</h1>
+              <p className="mt-1 text-sm text-muted-foreground">
+                Read-only Postgres URLs the agent can query.
+              </p>
+            </div>
+          </div>
+          <Button
+            size="sm"
+            variant={showForm ? "ghost" : "default"}
+            onClick={() => setShowForm(!showForm)}
+          >
+            {showForm ? (
+              "Cancel"
+            ) : (
+              <>
+                <Plus className="h-4 w-4" />
+                Add connection
+              </>
+            )}
+          </Button>
+        </header>
+
+        {showForm && <NewProfileForm onDone={() => setShowForm(false)} />}
+
+        {profiles.isLoading && <ListSkeleton rows={3} trailing />}
+
+        {profiles.error && (
+          <Alert variant="destructive">
+            <AlertDescription>{(profiles.error as Error).message}</AlertDescription>
+          </Alert>
+        )}
+
+        {profiles.data && profiles.data.length === 0 && !showForm && (
+          <div className="rounded-lg border border-dashed border-border bg-card p-10 text-center">
+            <p className="text-sm font-medium">No connections yet</p>
             <p className="mt-1 text-sm text-muted-foreground">
-              Read-only Postgres URLs the agent can query.
+              Add one to start chatting with a database.
             </p>
           </div>
-        </div>
-        <Button
-          size="sm"
-          variant={showForm ? "ghost" : "default"}
-          onClick={() => setShowForm(!showForm)}
-        >
-          {showForm ? (
-            "Cancel"
-          ) : (
-            <>
-              <Plus className="h-4 w-4" />
-              Add connection
-            </>
-          )}
-        </Button>
-      </header>
+        )}
 
-      {showForm && <NewProfileForm onDone={() => setShowForm(false)} />}
-
-      {profiles.isLoading && <ListSkeleton rows={3} trailing />}
-
-      {profiles.error && (
-        <Alert variant="destructive">
-          <AlertDescription>{(profiles.error as Error).message}</AlertDescription>
-        </Alert>
-      )}
-
-      {profiles.data && profiles.data.length === 0 && !showForm && (
-        <div className="rounded-lg border border-dashed border-border bg-card p-10 text-center">
-          <p className="text-sm font-medium">No connections yet</p>
-          <p className="mt-1 text-sm text-muted-foreground">
-            Add one to start chatting with a database.
-          </p>
-        </div>
-      )}
-
-      {profiles.data && profiles.data.length > 0 && (
-        <ul className="divide-y divide-border rounded-lg border border-border bg-card">
-          {profiles.data.map((p) => (
-            <ProfileRow
-              key={p.id}
-              profile={p}
-              onChange={() => qc.invalidateQueries({ queryKey: ["db-profiles"] })}
-            />
-          ))}
-        </ul>
-      )}
-    </div>
+        {profiles.data && profiles.data.length > 0 && (
+          <ul className="divide-y divide-border rounded-lg border border-border bg-card">
+            {profiles.data.map((p) => (
+              <ProfileRow
+                key={p.id}
+                profile={p}
+                onChange={() => qc.invalidateQueries({ queryKey: ["db-profiles"] })}
+              />
+            ))}
+          </ul>
+        )}
+      </div>
     </AppPageScroll>
   );
 }
@@ -115,6 +115,12 @@ function ProfileRow({ profile, onChange }: { profile: DbProfile; onChange: () =>
         </p>
       </div>
       <Badge variant={badge.variant}>{badge.label}</Badge>
+      <Button asChild type="button" variant="ghost" size="sm" aria-label="View memory">
+        <Link to="/app/memory/$dbProfileId" params={{ dbProfileId: profile.id }}>
+          <BookOpen className="h-4 w-4" />
+          Memory
+        </Link>
+      </Button>
       <Button
         type="button"
         variant="ghost"

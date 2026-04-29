@@ -56,6 +56,18 @@
     }
   ],
 
+  // Cross-chat memory index (task a0e754). 768-d vectors, cosine
+  // distance — matches `@cf/baai/bge-base-en-v1.5`. Tenant isolation
+  // is enforced via the `namespace` parameter on every query/upsert
+  // (set to `tenantId`); per-fact `dbProfileId` lives in vector
+  // metadata and is the primary scope filter.
+  "vectorize": [
+    {
+      "binding": "VECTORIZE_MEMORY",
+      "index_name": "data-agent-memory"
+    }
+  ],
+
   "secrets_store_secrets": [
     {
       "binding": "CONTROL_PLANE_DB_URL",

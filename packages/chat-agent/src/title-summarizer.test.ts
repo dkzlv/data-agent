@@ -175,7 +175,6 @@ function userMsg(text: string) {
 }
 
 describe("maybeScheduleTitleSummary", () => {
-
   it("schedules on the first user message with usable text", () => {
     const result = maybeScheduleTitleSummary({
       chatId: "c",

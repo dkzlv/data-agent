@@ -84,7 +84,12 @@ describe("repairDanglingToolParts", () => {
   });
 
   it("repairs every non-terminal state", () => {
-    const states = ["input-streaming", "input-available", "approval-requested", "approval-responded"];
+    const states = [
+      "input-streaming",
+      "input-available",
+      "approval-requested",
+      "approval-responded",
+    ];
     for (const s of states) {
       const r = repairDanglingToolParts([
         {

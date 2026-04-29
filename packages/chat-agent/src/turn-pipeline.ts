@@ -140,7 +140,13 @@ export class TurnPipeline {
       name === "db_query" ||
       name === "db_introspect" ||
       name.startsWith("artifact_write") ||
-      name === "chart_save";
+      name === "chart_save" ||
+      // Memory operations (task a0e754). Worth a separate audit row
+      // each — write/forget/search are user-affecting in different
+      // ways and we want them sliceable in the dashboard. Codemode
+      // sanitizes `memory.remember` → `memory_remember` etc., so we
+      // match the underscore form here.
+      name.startsWith("memory_");
     if (!isAuditable) return;
 
     const payload = await this.buildToolPayload(name, ctx);
@@ -215,6 +221,13 @@ export class TurnPipeline {
       // `inspect-turn.ts` alone, no Workers Logs round-trip.
       abortLikelyFrom,
       cancelReceived,
+      // Recall provenance (task a0e754). Empty array when memory was
+      // off or the recall produced nothing. Lets an operator answer
+      // "what facts did the model see for this turn?" from the audit
+      // log alone; the actual fact rows live in `memory_fact` and
+      // can be JOINed by id.
+      recalledFactIds: snap.recalledFactIds,
+      recalledFactCount: snap.recalledFactIds.length,
     });
   }
 

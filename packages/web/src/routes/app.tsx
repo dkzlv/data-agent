@@ -21,13 +21,7 @@ import { Menu } from "lucide-react";
 import { useState } from "react";
 import { authClient } from "~/lib/auth-client";
 import { Button } from "~/components/ui/button";
-import {
-  Sheet,
-  SheetContent,
-  SheetHeader,
-  SheetTitle,
-  SheetTrigger,
-} from "~/components/ui/sheet";
+import { Sheet, SheetContent, SheetHeader, SheetTitle, SheetTrigger } from "~/components/ui/sheet";
 import { AppSidebar } from "~/components/AppSidebar";
 
 /**
@@ -111,12 +105,7 @@ export function AppMobileNavTrigger() {
   return (
     <Sheet open={open} onOpenChange={setOpen}>
       <SheetTrigger asChild>
-        <Button
-          variant="ghost"
-          size="icon-sm"
-          aria-label="Open navigation"
-          className="md:hidden"
-        >
+        <Button variant="ghost" size="icon-sm" aria-label="Open navigation" className="md:hidden">
           <Menu className="h-4 w-4" />
         </Button>
       </SheetTrigger>

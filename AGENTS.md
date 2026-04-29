@@ -156,6 +156,38 @@ Key invariants:
 - `src/tools/artifact-tools.ts` + `src/agent.ts` (chartTools) —
   `chart.bar`, `chart.line`, `chart.scatter` produce Vega-Lite
   artifacts.
+- `src/memory/store.ts` — Drizzle CRUD on `memory_fact`. Single
+  point that knows the tenant+profile predicate and the
+  `(dbProfileId, contentHash)` UPSERT shape. `persistFact`,
+  `softDeleteFact`, `hydrateFacts`, `bumpHits`, `listFacts`,
+  `countFacts`, `toView`, `hardDeleteAllForProfile`.
+- `src/memory/embed.ts` — `embedText` / `embedTextOrNull` against
+  Workers AI `@cf/baai/bge-base-en-v1.5` (768-d). Throws on dim
+  mismatch — that's a hard "we'd corrupt the index" signal.
+- `src/memory/vectorize.ts` — `upsertVector`, `queryVectors`,
+  `deleteVectors` against `env.VECTORIZE_MEMORY`. Tenant
+  isolation = Vectorize `namespace` (hard) + metadata
+  `dbProfileId` filter (defense-in-depth).
+- `src/memory/retrieve.ts` — top-K + curation rerank +
+  diversity cap + token-budget truncation. Pure `rerank()` and
+  `truncateByTokens()` are exported for unit tests; the wrapper
+  `retrieveMemory()` is what the agent calls. Memory is
+  decorative — every failure path returns `[]`.
+- `src/memory/tools.ts` — `memory.*` ToolProvider for codemode:
+  `remember(args)`, `forget(idOrContent)`, `search(query, opts)`.
+  Returns null when memory is unusable (no dbProfile / no tenant)
+  so the typed declarations don't land in the prompt either —
+  the model never sees a surface that wouldn't work.
+- `src/memory/extract.ts` — post-turn implicit fact extractor
+  (llama-3.1-8b via Workers AI). `buildTurnTranscript` +
+  `parseExtractOutput` are pure-ish helpers covered by tests.
+  Per-DO sliding-window quota (5 facts/hour) lives on the agent
+  via `extractTimestamps[]` and is checked + stamped via
+  `checkAndStampExtractQuota()`.
+- `src/memory/summarize-chat.ts` — every-10-user-message chat
+  summary. One row per chat (dedupe on `sourceChatId`), updated
+  in place. `chat_summary` is the only kind the explicit
+  `memory.remember` rejects — reserved for this path.
 - `src/audit.ts` — `auditFromAgent(env, event)`: opens max=1
   Postgres connection, closes via waitUntil.
 - `src/rate-limits.ts` — pure `evaluatePolicy()` + Drizzle
@@ -182,6 +214,12 @@ Key invariants:
   write, decrypts on read (gated to owner).
 - `src/routes/audit.ts` — read-only audit log endpoint for tenant
   admins.
+- `src/routes/memory.ts` — memory management REST: `GET /api/memory`
+  (list + filter), `GET /api/memory/:id`, `DELETE /api/memory/:id`
+  (soft-delete + Vectorize scrub). All tenant-scoped; dbProfile
+  ownership verified per request. Vector search is intentionally
+  NOT exposed externally — kept server-internal in chat-agent to
+  shrink the abuse surface.
 - `src/audit.ts` — `writeAudit(db, event)` Drizzle helper.
 
 ### web
@@ -214,6 +252,21 @@ class-name composer.
   (max-w 900px) — earlier versions rendered a mini ArtifactViewer
   inside the 288px column which clipped chart titles. Exports
   `WorkspaceSidebarBody` for the mobile Sheet.
+- `src/components/MemoryRecalledStrip.tsx` — collapsible "Used N
+  facts from past chats" strip rendered above the assistant message.
+  Subscribes to `data_agent_memory_recall` WS frames in
+  `ChatRoom.tsx`'s `onMsg` handler. Live-only — strip doesn't
+  re-render on history replay (recall ids land in the audit log,
+  not in persisted messages).
+- `src/components/MemoryChip.tsx` — inline "Remembered: ..." chip +
+  Undo button. One per `data_agent_memory_written` frame; capped
+  at REMEMBER_CALLS_PER_TURN (=3) on the server. Undo posts
+  `DELETE /api/memory/:id`; chip flips to "Removed" optimistically.
+- `src/routes/app.memory.$dbProfileId.tsx` — read-only memory
+  management page. Loader hits `dbProfilesApi.list` to find the
+  profile name; main query is `memoryApi.list` with kind +
+  substring filters. Delete uses a Dialog (no AlertDialog
+  primitive in this codebase yet).
 - `src/components/list-skeleton.tsx` — `ListSkeleton` reusable
   loading placeholder for divider lists (chats, connections,
   workspace). Pseudo-random row widths so the placeholder breathes.
@@ -301,6 +354,13 @@ in the dashboard. Stable event names (so saved queries don't break):
 | `chat.title_summarized` | chat-agent | auto-title saved + broadcast |
 | `chat.title_summarize_failed` | chat-agent | model err / sanitize reject / race lost / persist err |
 | `chat.title_summarize_skipped` | chat-agent | trigger fired but didn't schedule (no_text / text_too_short / tenant_unresolved) |
+| `memory.recall` / `memory.recall_failed` | chat-agent | per-turn cross-chat memory recall (task a0e754) |
+| `memory.write` / `memory.write_failed` / `memory.forget` | chat-agent | `memory.remember` / `memory.forget` tool calls |
+| `memory.embed` / `memory.embed_failed` | chat-agent | Workers AI bge-base-en-v1.5 embed heartbeat |
+| `memory.vectorize_query` / `memory.vectorize_upsert` / `memory.vectorize_delete` | chat-agent + api-gateway | Vectorize round-trips |
+| `memory.extract_start` / `memory.extract_complete` / `memory.extract_failed` / `memory.extract_skipped` | chat-agent | post-turn implicit fact extraction (llama-3.1-8b) |
+| `memory.extracted` | chat-agent | shorthand "we just persisted N facts this turn" |
+| `memory.summary_persisted` / `memory.summary_failed` / `memory.summary_skipped` | chat-agent | every-10-turn chat summary |
 | `chat.history_repaired` | chat-agent | beforeTurn rewrote dangling tool parts from an aborted prior turn |
 | `chat.history_repair_failed` | chat-agent | the repair pass itself threw (best-effort, turn proceeds anyway) |
 | `chat.reasoning_stamp_failed` | chat-agent | failed to stamp measured reasoning elapsedMs onto the assistant message (UI label only; non-blocking) |
@@ -324,7 +384,9 @@ audit row never blocks a user request — but it does emit an
 Actions: `chat.create`, `chat.delete`, `chat.member.*`,
 `chat.title.auto`, `db_profile.create`, `db_profile.delete`,
 `chat.ws.connect`, `turn.start`, `turn.complete`, `turn.error`,
-`db.query`, `tool.<name>`, `artifact.read`.
+`db.query`, `tool.<name>`, `artifact.read`,
+`memory.remember`, `memory.forget`, `memory.extracted`,
+`tool.memory_remember`, `tool.memory_forget`, `tool.memory_search`.
 
 `audit_log` doubles as the rate-limit counter store
 (`turn.start` rows). Acceptable for alpha; post-alpha move to KV.
@@ -553,6 +615,9 @@ All in `packages/chat-agent/scripts/` unless noted. Run via
 | `spike-artifacts.ts` | Artifact write/read round-trip |
 | `spike-sandbox.ts` | T1 verifier: network/timeout probes |
 | `spike-audit.ts` | audit_log integration smoke test |
+| `spike-memory.ts` | End-to-end memory probe: persist → embed → upsert → query → hydrate → soft-delete |
+| `inspect-memory.ts <dbProfileId>` | Dump top facts for a profile (kind groups, hit counts) |
+| `debug-memory-clear.ts <dbProfileId>` | Hard-delete every fact for a profile + scrub Vectorize |
 
 In `packages/api-gateway/scripts/`:
 | `spike-audit.ts` | gateway-side audit_log smoke test |
@@ -711,6 +776,48 @@ project. Don't undo without reading the relevant context.
     (non-empty text, or a tool call in `output-available`).
     Decoded errors (rate limit, sandbox timeout, SQL) are always
     preserved. Repro: chat `3a76a225` (task `bf7ab7`).
+19. **In-house memory over `mem0` / `LangMem` / `mastra`** (task
+    a0e754). The market libraries are Node-shaped and would drag
+    sqlite/qdrant/Python adapters into our Workers runtime.
+    `workers-ai-provider` already bit us once (subtask 16656a) on
+    the runtime-mismatch axis, and the conceptual surface we
+    actually need from mem0 (extract → dedupe → embed → recall) is
+    ~400 LOC over our existing stack: Postgres source-of-truth +
+    Vectorize index + Workers AI embeddings + a small reranker.
+    Trading 30k★ of brand for zero new runtime deps was the right
+    call here. We did *steal* mem0's concepts: typed fact records,
+    LLM-driven extract operations, embed-on-write + embed-on-read.
+20. **Postgres source-of-truth, Vectorize as index** (task a0e754).
+    Vector id == Postgres `memory_fact.id` (UUID). Vectorize
+    metadata is intentionally lean (`dbProfileId`, `kind`,
+    `createdAt`) — content text lives only in Postgres so a soft-
+    deleted fact stops appearing in recall the moment we flip
+    `deleted_at` (the `hydrateFacts` filter is the gate). If the
+    content also lived in Vectorize metadata, soft-delete would
+    leak into recalled-facts until the periodic Vectorize sweep
+    runs.
+21. **Tenant isolation = Vectorize namespace + metadata filter**
+    (task a0e754). Both. Namespace gives hard isolation by API
+    contract — a query without a namespace can't even *see* other
+    tenants' vectors. Metadata `dbProfileId` filter is the
+    primary scope. Defense-in-depth on purpose: if a future
+    refactor drops the metadata filter we still don't leak
+    cross-tenant; if a future refactor drops the namespace we
+    still don't leak cross-profile within a tenant.
+22. **Memory is decorative** (task a0e754). Every recall path
+    swallows its own errors and degrades to "no recall" silently.
+    The turn always proceeds. Symmetric on the write side, the
+    `memory.remember` tool throws to the model on embed/upsert
+    failure (so it can retry next turn) but rolls back the
+    Postgres row first — the two stores never drift.
+23. **Per-DO sliding-window for extraction quota** (task a0e754).
+    The cap (5 facts/hour) is enforced via `extractTimestamps[]`
+    on the agent host, not via an audit-DB COUNT query on every
+    turn. Per-DO is the right scope: the DO is per-chat, so this
+    is "this chat's extraction frequency" — exactly what we want
+    to throttle. A tenant-wide limit would require a hot-path
+    DB query for what the cap protects against (a runaway
+    extractor, not a tenant-wide cost ceiling).
 
 ### Hooking new HTTP routes from the agents-SDK client surface
 

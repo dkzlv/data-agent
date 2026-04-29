@@ -22,6 +22,7 @@ import { stateTools } from "@cloudflare/shell/workers";
 import type { ToolSet } from "ai";
 import { getDataDb, type DataDbHandle } from "../data-db";
 import type { Env } from "../env";
+import { memoryTools, type MemoryToolHost } from "../memory/tools";
 import { artifactTools, chartTools } from "./artifact-tools";
 import { wrapCodemodeTool, type CodemodeWrapEvent } from "./codemode-wrap";
 import { dbTools } from "./db-tools";
@@ -54,6 +55,14 @@ export interface ToolBuildHost {
 export interface BuildAgentToolsInputs {
   env: Env;
   host: ToolBuildHost;
+  /**
+   * Memory-tool integration host (task a0e754). Optional — when null
+   * the `memory.*` provider is omitted entirely (no typed
+   * declarations land in the prompt either, so the model never sees
+   * a memory surface that wouldn't work). The agent passes null
+   * when memory is feature-flagged off.
+   */
+  memoryHost?: MemoryToolHost | null;
   /** Caller-injected so logging stays in the agent's TurnLogger
    *  envelope (chatId/tenantId/userId/turnId all auto-bound). */
   onCodemodeEvent?: (ev: CodemodeWrapEvent) => void;
@@ -71,7 +80,7 @@ export interface BuildAgentToolsInputs {
  * sees a single meta-tool; capabilities live inside the sandbox.
  */
 export function buildAgentTools(inputs: BuildAgentToolsInputs): ToolSet {
-  const { env, host, onCodemodeEvent, descriptionPrepend } = inputs;
+  const { env, host, onCodemodeEvent, descriptionPrepend, memoryHost } = inputs;
 
   const executor = new DynamicWorkerExecutor({
     loader: env.LOADER as never,
@@ -80,12 +89,18 @@ export function buildAgentTools(inputs: BuildAgentToolsInputs): ToolSet {
   });
 
   const dataDbInputs = { env, chatId: host.name, cache: host.dataDbCache };
+  // Memory provider is null when memory is disabled (no dbProfile,
+  // missing tenant context, or feature flag off). Skipped here means
+  // the typed declarations also don't land in the prompt — so the
+  // model never sees a `memory.*` namespace it can't actually use.
+  const memoryProvider = memoryHost ? memoryTools(env, memoryHost) : null;
   const capabilities = [
     stateTools(host.workspace),
     dbTools(() => getDataDb(dataDbInputs)),
     artifactTools(host),
     chartTools(host),
     vegaLiteTools(),
+    ...(memoryProvider ? [memoryProvider] : []),
   ];
 
   const rawCodemode = createCodeTool({ tools: capabilities, executor });

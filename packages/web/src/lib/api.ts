@@ -110,6 +110,51 @@ export type ArtifactSummary = {
   chartType?: string;
 };
 
+/** Subset of MemoryFactView (server-side `@data-agent/shared`) — duplicated
+ *  here so the web bundle doesn't pull a Workers-shaped package. */
+export type MemoryFact = {
+  id: string;
+  kind:
+    | "schema_semantic"
+    | "business_def"
+    | "user_pref"
+    | "query_pattern_good"
+    | "query_pattern_bad"
+    | "entity"
+    | "chat_summary";
+  content: string;
+  payload: Record<string, unknown> | null;
+  dbProfileId: string;
+  sourceChatId: string | null;
+  sourceTurnId: string | null;
+  hitCount: number;
+  createdAt: string;
+  updatedAt: string;
+  lastUsedAt: string | null;
+};
+
+export const memoryApi = {
+  list: (params: {
+    dbProfileId: string;
+    kind?: MemoryFact["kind"];
+    q?: string;
+    cursor?: string;
+    limit?: number;
+  }) => {
+    const qs = new URLSearchParams();
+    qs.set("dbProfileId", params.dbProfileId);
+    if (params.kind) qs.set("kind", params.kind);
+    if (params.q) qs.set("q", params.q);
+    if (params.cursor) qs.set("cursor", params.cursor);
+    if (typeof params.limit === "number") qs.set("limit", String(params.limit));
+    return api.get<{ facts: MemoryFact[]; nextCursor: string | null; total: number }>(
+      `/api/memory?${qs.toString()}`
+    );
+  },
+  get: (id: string) => api.get<MemoryFact>(`/api/memory/${id}`),
+  remove: (id: string) => api.del<{ ok: true }>(`/api/memory/${id}`),
+};
+
 export const chatsApi = {
   list: () => api.get<{ chats: Chat[] }>("/api/chats"),
   // No `title` — chats start as "New chat" and are auto-titled on the

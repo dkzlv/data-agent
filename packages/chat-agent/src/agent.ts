@@ -6,7 +6,7 @@ import { logEvent, truncateMessage } from "@data-agent/shared";
 import { runRateLimitCheck, RateLimitError } from "./rate-limits";
 import { type DataDbHandle } from "./data-db";
 import { buildSystemPrompt, type ChatContext } from "./system-prompt";
-import { scheduleTitleSummary } from "./title-summarizer";
+import { extractFirstUserText, scheduleTitleSummary } from "./title-summarizer";
 import { readSecret, type Env } from "./env";
 import { TurnState } from "./turn-state";
 import { TurnLogger } from "./turn-logger";
@@ -26,6 +26,15 @@ import { buildAgentTools } from "./tools/build";
 import { repairDanglingToolParts } from "./repair-history";
 import type { AgentHost } from "./agent-host";
 import * as debug from "./debug-rpcs";
+import { retrieveMemory } from "./memory/retrieve";
+import { bumpHits } from "./memory/store";
+import type { MemoryToolHost } from "./memory/tools";
+import { EXTRACT_FACTS_PER_HOUR_PER_TENANT, extractAndPersist } from "./memory/extract";
+import {
+  SUMMARY_TRIGGER_EVERY,
+  countUserMessages,
+  summarizeAndPersistChat,
+} from "./memory/summarize-chat";
 
 const CODEMODE_DESCRIPTION_PREPEND =
   "USE THIS TOOL whenever you need to introspect the schema, " +
@@ -113,6 +122,26 @@ export class ChatAgent extends Think<Env> implements AgentHost {
    * history (a hibernation + revive will see >1 user message and skip).
    */
   private titleScheduled = false;
+
+  /**
+   * Sliding-window timestamps for memory-extraction calls (task
+   * a0e754). Bounded to one hour worth of entries; older are pruned
+   * lazily on each check. Per-DO not per-tenant — the DO is per-
+   * chat, so this is effectively "this chat's extraction frequency",
+   * which is the right scope for the spam guard. (A tenant-wide
+   * limit would require an audit-DB count on every turn — too
+   * expensive for what the cap protects against.)
+   */
+  private extractTimestamps: number[] = [];
+
+  /**
+   * Last user-message count we summarized at. Used to fire chat-
+   * summary updates exactly once per `SUMMARY_TRIGGER_EVERY` user
+   * messages. Persists across hibernation: on revive we recompute
+   * from `getPersistedMessages()` and avoid re-summarizing if we
+   * already crossed the threshold.
+   */
+  private lastSummaryAtUserCount = 0;
 
   // --- Envelope getters (read by TurnLogger via EnvelopeProvider) -------
 
@@ -213,9 +242,10 @@ export class ChatAgent extends Think<Env> implements AgentHost {
 
   /**
    * Per-turn: history-repair pass, gate rate limit, stamp turn start,
-   * schedule auto-title (first turn only), inject the system prompt.
-   * Falls back gracefully if the control-plane is unreachable — we
-   * never block a turn on prompt decoration.
+   * schedule auto-title (first turn only), recall memory, inject the
+   * system prompt. Falls back gracefully if the control-plane (or
+   * memory infra) is unreachable — we never block a turn on prompt
+   * decoration.
    */
   override async beforeTurn(): Promise<void | { system: string }> {
     this.repairDanglingHistory();
@@ -228,6 +258,13 @@ export class ChatAgent extends Think<Env> implements AgentHost {
       modelId: this.currentModelId,
       userId: this.lastSenderUserId,
     });
+
+    // Memory recall (task a0e754). Inlined into ChatContext so the
+    // system-prompt builder picks it up without a separate field on
+    // the prompt. Decorative — failures degrade silently to "no
+    // recall" and the turn proceeds.
+    const recalledFacts = await this.recallMemoryForTurn(ctx);
+    const ctxWithRecall: ChatContext | undefined = ctx ? { ...ctx, recalledFacts } : ctx;
 
     if (!this.titleScheduled) {
       const result = scheduleTitleSummary({
@@ -252,7 +289,234 @@ export class ChatAgent extends Think<Env> implements AgentHost {
       if (result.scheduled) this.titleScheduled = true;
     }
 
-    return { system: buildSystemPrompt(ctx) };
+    return { system: buildSystemPrompt(ctxWithRecall) };
+  }
+
+  /**
+   * Schedule the post-turn memory work: implicit fact extraction
+   * from this turn's transcript, and (every Nth user message) a
+   * fresh chat summary. Both fire via `waitUntil` so the user sees
+   * the assistant reply immediately.
+   *
+   * Skipped when:
+   *   - the chat has no dbProfile (memory is per-DB), or
+   *   - tenant is unresolved (audit + isolation depend on it).
+   *
+   * Per-tenant rate cap (5 facts/hour) is enforced by the
+   * `extractTimestamps` sliding window — each successful extraction
+   * appends a timestamp; a check before extraction prunes >1h-old
+   * entries and rejects when the window is full.
+   */
+  private scheduleMemoryPostTurn(): void {
+    const ctx = this.chatContext.peek();
+    const tenantId = ctx?.tenantId;
+    const dbProfileId = ctx?.dbProfileId;
+    if (!tenantId || !dbProfileId) return;
+
+    const messages = this.getPersistedMessages();
+    const turnId = this.turn.turnId;
+
+    // Extract — checks the per-DO sliding-window quota up front.
+    this.ctx.waitUntil(
+      extractAndPersist(
+        {
+          env: this.env,
+          tenantId,
+          dbProfileId,
+          chatId: this.name,
+          turnId,
+          messages,
+          userId: this.lastSenderUserId,
+          gatewayId: this.env.AI_GATEWAY_ID ?? null,
+        },
+        () => this.checkAndStampExtractQuota()
+      )
+        .then((res) => {
+          if (res.extracted > 0) {
+            this.turnLog.event("memory.extracted", {
+              level: "info",
+              count: res.extracted,
+              proposed: res.records.length,
+            });
+            // One audit row for the *batch* — per-fact rows would
+            // spam the audit log; the batch shape lets an operator
+            // see "this turn yielded N facts" in `inspect-turn.ts`.
+            const promise = this.turnLog.audit("memory.extracted", turnId, {
+              count: res.extracted,
+              proposed: res.records.length,
+              factIds: res.records.filter((r) => r.factId).map((r) => r.factId),
+            });
+            if (promise) this.ctx.waitUntil(promise);
+          }
+        })
+        .catch(() => {
+          // Defensive — extractAndPersist swallows its own errors,
+          // but we don't want a stray throw to surface in DO logs.
+        })
+    );
+
+    // Summary — every Nth user message. Idempotent in the DB layer
+    // (one row per chat, updated in place), so we can re-fire in the
+    // edge case of `lastSummaryAtUserCount` lagging across hibernate
+    // — duplicate work, no duplicate row.
+    const userCount = countUserMessages(messages);
+    if (
+      userCount > 0 &&
+      userCount % SUMMARY_TRIGGER_EVERY === 0 &&
+      userCount !== this.lastSummaryAtUserCount
+    ) {
+      this.lastSummaryAtUserCount = userCount;
+      this.ctx.waitUntil(
+        summarizeAndPersistChat({
+          env: this.env,
+          tenantId,
+          dbProfileId,
+          chatId: this.name,
+          messages,
+          gatewayId: this.env.AI_GATEWAY_ID ?? null,
+          userId: this.lastSenderUserId,
+        }).catch(() => {})
+      );
+    }
+  }
+
+  /**
+   * Sliding-window check + stamp for the extraction rate cap. Returns
+   * `{ ok, remaining }` so the extractor can decide whether to spend
+   * a model call. We stamp on `ok: true` *before* the model call —
+   * worst case we burn the quota slot on a 0-fact extraction; better
+   * than checking after and double-counting overlapping calls.
+   */
+  private checkAndStampExtractQuota(): { ok: boolean; remaining: number } {
+    const now = Date.now();
+    const oneHourAgo = now - 60 * 60 * 1000;
+    this.extractTimestamps = this.extractTimestamps.filter((ts) => ts > oneHourAgo);
+    if (this.extractTimestamps.length >= EXTRACT_FACTS_PER_HOUR_PER_TENANT) {
+      return { ok: false, remaining: 0 };
+    }
+    this.extractTimestamps.push(now);
+    return {
+      ok: true,
+      remaining: EXTRACT_FACTS_PER_HOUR_PER_TENANT - this.extractTimestamps.length,
+    };
+  }
+
+  /**
+   * Build the host shim the `memory.*` tool uses to access the
+   * agent's per-turn state. Re-built on every `getTools()` call so
+   * the lazy getters always read the *current* turn id / userId.
+   *
+   * Returns null when memory is unusable in this chat (no dbProfile
+   * attached, or tenant unresolved). The tool builder reads the
+   * null and skips the provider entirely — the model never sees a
+   * `memory.*` namespace it can't actually use.
+   */
+  private buildMemoryHost(): MemoryToolHost | null {
+    const ctx = this.chatContext.peek();
+    if (!ctx?.tenantId || !ctx.dbProfileId) return null;
+    return {
+      tenantId: () => this.chatContext.peek()?.tenantId ?? null,
+      dbProfileId: () => this.chatContext.peek()?.dbProfileId ?? null,
+      userId: () => this.lastSenderUserId,
+      chatId: () => this.name,
+      turnId: () => this.turn.turnId,
+      bumpRememberCount: () => this.turn.bumpMemoryRememberCount(),
+      waitUntil: (p) => this.ctx.waitUntil(p),
+      broadcast: (msg) => this.broadcast(msg),
+      audit: (action, target, payload) => {
+        const promise = this.turnLog.audit(action, target, payload);
+        if (promise) this.ctx.waitUntil(promise);
+      },
+    };
+  }
+
+  /**
+   * Run the memory-recall pipeline for the current turn (task
+   * a0e754). Returns the list of `{kind, content}` rendered into the
+   * system prompt's `## Recalled facts` block.
+   *
+   * Side effects (best-effort, all fired via `waitUntil`):
+   *   - `setRecalledFactIds` on `TurnState` so `turn.complete` audit
+   *     records what was recalled.
+   *   - `bumpHits` on each recalled fact so the curation rerank
+   *     knows which facts get used.
+   *   - `data_agent_memory_recall` WS broadcast so the chat UI
+   *     renders the "Used N facts from past chats" strip.
+   *
+   * No-ops when the chat has no dbProfile (memory is per-DB) or the
+   * tenant id is unresolved (audit + isolation depend on it).
+   *
+   * Failure paths return an empty array — `retrieve.ts` is the
+   * single point that decides "memory is decorative; never block a
+   * turn", and this function is just the dispatch layer.
+   */
+  private async recallMemoryForTurn(
+    ctx: ChatContext | undefined
+  ): Promise<ReadonlyArray<{ kind: string; content: string }>> {
+    const tenantId = ctx?.tenantId;
+    const dbProfileId = ctx?.dbProfileId;
+    if (!tenantId || !dbProfileId) return [];
+
+    // Build the retrieval query: the most recent user message text
+    // plus the chat title. The title is short and disambiguates the
+    // intent of cold messages ("show me top customers" — top by
+    // what? the chat title often hints).
+    const messages = this.getPersistedMessages();
+    const lastUser = [...messages].reverse().find((m) => (m as { role?: string }).role === "user");
+    const userText = lastUser ? (extractFirstUserText(lastUser) ?? "") : "";
+    const queryText = [userText, ctx?.chatTitle ?? ""].filter(Boolean).join("\n");
+    if (!queryText.trim()) return [];
+
+    try {
+      const result = await retrieveMemory({
+        env: this.env,
+        tenantId,
+        dbProfileId,
+        query: queryText,
+      });
+      const ids = result.facts.map((f) => f.id);
+      this.turn.setRecalledFactIds(ids);
+
+      if (ids.length > 0) {
+        // Bump hits in the background — never block the turn on it.
+        this.ctx.waitUntil(bumpHits(this.env, { tenantId, ids }).catch(() => {}));
+        // Broadcast for the UI strip. Lean payload — id, kind,
+        // content; client renders the rest.
+        try {
+          this.broadcast(
+            JSON.stringify({
+              type: "data_agent_memory_recall",
+              chatId: this.name,
+              turnId: this.turn.turnId,
+              facts: result.facts.map((f, i) => ({
+                id: f.id,
+                kind: f.kind,
+                content: f.content,
+                score: result.scores[i] ?? 0,
+              })),
+            })
+          );
+        } catch {
+          // No live conns or serialization edge — UI will catch up
+          // on next page load.
+        }
+      }
+
+      return result.facts.map((f) => ({ kind: f.kind, content: f.content }));
+    } catch (err) {
+      // Defensive — `retrieveMemory` already swallows its own errors,
+      // but if a deploy breaks the contract we still want to log
+      // and proceed.
+      logEvent({
+        event: "memory.recall_failed",
+        level: "warn",
+        chatId: this.name,
+        tenantId,
+        dbProfileId,
+        error: truncateMessage(err),
+      });
+      return [];
+    }
   }
 
   override async onStepFinish(ctx: { usage?: unknown }): Promise<void> {
@@ -265,6 +529,12 @@ export class ChatAgent extends Think<Env> implements AgentHost {
 
   override async onChatResponse(result: ChatResponseResult): Promise<void> {
     this.pipeline.complete(result, this.currentModelId);
+    // Memory post-turn (task a0e754). Only on clean completes — no
+    // point extracting from an aborted/errored turn (the assistant
+    // text is partial; extracting from that would inject noise).
+    if (result.status === "completed") {
+      this.scheduleMemoryPostTurn();
+    }
   }
 
   override onChatError(error: unknown): unknown {
@@ -280,6 +550,7 @@ export class ChatAgent extends Think<Env> implements AgentHost {
     return buildAgentTools({
       env: this.env,
       host: this,
+      memoryHost: this.buildMemoryHost(),
       descriptionPrepend: CODEMODE_DESCRIPTION_PREPEND,
       onCodemodeEvent: (ev) => {
         if (ev.kind === "truncated") {
@@ -638,6 +909,12 @@ export class ChatAgent extends Think<Env> implements AgentHost {
   }
   @callable() debugTitleProbe(text: string) {
     return debug.debugTitleProbe(this, text);
+  }
+  @callable() memorySmoke(args: { tenantId: string; dbProfileId: string }) {
+    return debug.memorySmoke(this, args);
+  }
+  @callable() debugMemoryDeleteVectors(args: { ids: string[]; tenantId: string }) {
+    return debug.debugMemoryDeleteVectors(this, args);
   }
   @callable() healthcheck() {
     return debug.healthcheck(this);
