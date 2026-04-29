@@ -28,6 +28,28 @@ Workflow:
 
 Refuse to do anything outside the data-analysis scope.`;
 
+/**
+ * ChatAgent — extends `Think`, the AI-chat-aware Agent base.
+ *
+ * Persistence (subtask 382d1f):
+ *   `Think` persists every turn (user messages, assistant text, tool calls,
+ *   tool results) into this DO's SQLite via the `cf_agent_chat_messages`
+ *   protocol. On every WS connect the server replays the full history to
+ *   the client. This is verified end-to-end by `scripts/spike.ts`.
+ *
+ * Resumable streaming (subtask 382d1f):
+ *   When a client disconnects mid-turn, the model continues to run; the
+ *   client reconnects and sends `cf_agent_stream_resume_request`, the
+ *   server replies with `cf_agent_stream_resuming` and replays buffered
+ *   chunks, ending with `done`. If there's nothing in flight the server
+ *   replies with `cf_agent_stream_resume_none`. We get this for free —
+ *   `Think` ships `ContinuationState` + an in-memory chunk buffer per
+ *   active request, keyed by `requestId`.
+ *
+ * We don't need to override anything to get either; we only rely on
+ * `Think` not being misconfigured. Persistence is anchored to `this.name`
+ * (the chat id), so cross-chat isolation comes from the DO name routing.
+ */
 export class ChatAgent extends Think<Env> {
   override workspace = new Workspace({
     sql: this.ctx.storage.sql,

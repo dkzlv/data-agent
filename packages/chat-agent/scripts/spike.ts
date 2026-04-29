@@ -212,6 +212,40 @@ async function step3_persistence(): Promise<{ messageCount: number }> {
   );
 }
 
+/**
+ * After the assistant turn completes, sending a stream resume request
+ * should immediately yield `cf_agent_stream_resume_none` (nothing to
+ * resume). Verifies the resume protocol is wired through Think.
+ */
+async function step4_resumeProtocol(): Promise<{ resumeNone: boolean }> {
+  console.log("\n[4/5] Resume protocol — expect stream_resume_none after turn completes…");
+  return await withClient(
+    (client) =>
+      new Promise<{ resumeNone: boolean }>((resolve) => {
+        let resumeNone = false;
+        const timeout = setTimeout(() => resolve({ resumeNone }), 6_000);
+        client.addEventListener("message", (e) => {
+          const raw = typeof e.data === "string" ? e.data : "";
+          if (!raw) return;
+          try {
+            const data = JSON.parse(raw) as { type?: string };
+            if (data.type === "cf_agent_stream_resume_none") {
+              resumeNone = true;
+              clearTimeout(timeout);
+              resolve({ resumeNone });
+            }
+          } catch {
+            // ignore
+          }
+        });
+        // Wait for connection + history snapshot, then send resume request.
+        setTimeout(() => {
+          client.send(JSON.stringify({ type: "cf_agent_stream_resume_request" }));
+        }, 1_000);
+      })
+  );
+}
+
 async function main() {
   await step1_healthcheck();
   const chat = await step2_chat();
@@ -221,12 +255,14 @@ async function main() {
   console.log(`  finalText: ${JSON.stringify(chat.finalText.slice(0, 240))}`);
   const persist = await step3_persistence();
   console.log(`  ✓ history count=${persist.messageCount}`);
+  const resume = await step4_resumeProtocol();
+  console.log(`  ✓ resume_none=${resume.resumeNone}`);
 
   const codeRan = chat.toolEvents > 0;
   const responded = chat.finalText.length > 0 || chat.toolEvents > 0;
   const persisted = persist.messageCount >= 2;
 
-  console.log("\n[4/4] SPIKE RESULT");
+  console.log("\n[5/5] SPIKE RESULT");
   console.log(`  WS routing            : ${"✓"}`);
   console.log(`  RPC method            : ${"✓"}`);
   console.log(`  Workers AI / Kimi K2.6: ${responded ? "✓" : "✗"}`);
@@ -234,6 +270,7 @@ async function main() {
     `  Code Mode fired       : ${codeRan ? "✓" : "?  (LLM may have answered without invoking code)"}`
   );
   console.log(`  Message persistence   : ${persisted ? "✓" : "✗"} (${persist.messageCount} msgs)`);
+  console.log(`  Resume protocol wired : ${resume.resumeNone ? "✓" : "✗"}`);
 
   if (!responded) {
     process.exit(2);
