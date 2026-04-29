@@ -231,7 +231,7 @@ After scaffolding all 5 packages (subtasks 1-7 done), the workspace is in this s
 - [x] 3c8c0b Scaffold api-gateway Worker
 - [x] 616db2 Scaffold ChatAgent DO
 - [x] fde638 Scaffold web app
-- [ ] 6c7414 Better Auth in control-plane
+- [x] 6c7414 Better Auth in control-plane
 - [ ] 5d7e7d Wire web app to Better Auth
 - [ ] 4cd388 Session JWT minting + validation
 - [ ] c97933 Design control-plane DB schema
