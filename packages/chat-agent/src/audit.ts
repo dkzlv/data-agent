@@ -9,7 +9,7 @@
  * Usage:
  *   ctx.waitUntil(auditFromAgent(env, {...}));
  */
-import type { AuditEvent } from "@data-agent/shared";
+import { logEvent, truncateMessage, type AuditEvent } from "@data-agent/shared";
 import { readSecret, type Env } from "./env";
 
 export async function auditFromAgent(env: Env, event: AuditEvent): Promise<void> {
@@ -32,6 +32,14 @@ export async function auditFromAgent(env: Env, event: AuditEvent): Promise<void>
       await client.end({ timeout: 1 }).catch(() => {});
     }
   } catch (err) {
-    console.error("audit (chat-agent) write failed", { action: event.action, err });
+    logEvent({
+      event: "audit.write_failed",
+      level: "error",
+      source: "chat-agent",
+      action: event.action,
+      tenantId: event.tenantId,
+      chatId: event.chatId ?? null,
+      error: truncateMessage(err),
+    });
   }
 }

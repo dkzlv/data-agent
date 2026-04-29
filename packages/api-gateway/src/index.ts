@@ -1,6 +1,6 @@
 import { Hono } from "hono";
 import { cors } from "hono/cors";
-import { logger } from "hono/logger";
+import { logEvent, truncateMessage } from "@data-agent/shared";
 import { createAuth } from "./auth";
 import { auditRouter } from "./routes/audit";
 import { chatsRouter } from "./routes/chats";
@@ -16,7 +16,56 @@ type Variables = {
 
 const app = new Hono<{ Bindings: Bindings; Variables: Variables }>();
 
-app.use("*", logger());
+/**
+ * Structured per-request span (subtask 9fa055). Replaces hono's
+ * dev-friendly `logger()` with a single JSON line per request that
+ * Workers Logs can index by any field. We emit AFTER `next()` so we
+ * can include the response status. WS upgrades skip the span (they
+ * never resolve `next()` to a normal Response — see wsRouter).
+ *
+ * Fields: method, path, status, durationMs, userId?, tenantId?,
+ * sessionId?, ua?, cfRay (request id for cross-worker correlation).
+ *
+ * Hot paths like `/healthz` are still logged because the request
+ * volume is tiny and "is healthz green?" is a useful filter.
+ */
+app.use("*", async (c, next) => {
+  const startedAt = Date.now();
+  const method = c.req.method;
+  const path = new URL(c.req.url).pathname;
+  const cfRay = c.req.header("cf-ray") ?? null;
+  try {
+    await next();
+  } catch (err) {
+    // Hono's onError handler will set the response, but we still
+    // want the span for failed requests.
+    logEvent({
+      event: "api.request",
+      level: "error",
+      method,
+      path,
+      status: 500,
+      durationMs: Date.now() - startedAt,
+      cfRay,
+      error: truncateMessage(err),
+    });
+    throw err;
+  }
+  const session = c.get("session");
+  logEvent({
+    event: "api.request",
+    method,
+    path,
+    status: c.res.status,
+    durationMs: Date.now() - startedAt,
+    cfRay,
+    // Most public endpoints (auth, healthz) won't have a session
+    // attached — emit `null` rather than skip the span so a query
+    // for "anonymous traffic" still works.
+    userId: session?.user?.id ?? null,
+    tenantId: session?.tenantId ?? null,
+  });
+});
 
 app.use("/api/*", async (c, next) => {
   const origin = c.req.header("origin") ?? c.env.APP_URL;
@@ -58,8 +107,10 @@ app.route("/api", api);
 
 app.notFound((c) => c.json({ error: "not found", path: c.req.path }, 404));
 app.onError((err, c) => {
-  console.error("api-gateway unhandled error", err);
-  return c.json({ error: "internal error" }, 500);
+  // Don't log here — the per-request middleware already records the
+  // span as an error span (status 500). We just translate the error
+  // into the response body.
+  return c.json({ error: "internal error", message: truncateMessage(err) }, 500);
 });
 
 export default app satisfies ExportedHandler<Env>;

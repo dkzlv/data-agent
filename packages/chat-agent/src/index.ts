@@ -1,5 +1,5 @@
 import { routeAgentRequest } from "agents";
-import { verifyChatToken } from "@data-agent/shared";
+import { logEvent, truncateMessage, verifyChatToken } from "@data-agent/shared";
 import { readSecret, type Env } from "./env";
 export { ChatAgent } from "./agent";
 
@@ -72,7 +72,12 @@ async function authenticateChatRequest(req: Request, env: Env): Promise<Response
       // Request automatically and Request constructor copies them.
     });
   } catch (err) {
-    console.warn("chat auth failed", { chatId, err: (err as Error).message });
+    logEvent({
+      event: "chat.auth_failed",
+      level: "warn",
+      chatId,
+      error: truncateMessage(err),
+    });
     return new Response("invalid token", { status: 401 });
   }
 }

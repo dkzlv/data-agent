@@ -6,7 +6,7 @@ import { DynamicWorkerExecutor } from "@cloudflare/codemode";
 import { createCodeTool } from "@cloudflare/codemode/ai";
 import type { LanguageModel, ToolSet } from "ai";
 import { createWorkersAI } from "workers-ai-provider";
-import { hashSql, safePayload } from "@data-agent/shared";
+import { hashSql, logEvent, safePayload, truncateMessage } from "@data-agent/shared";
 import { auditFromAgent } from "./audit";
 import { checkRateLimits, RateLimitError } from "./rate-limits";
 import { getDataDb, resetDataDb, type AgentLike, type CachedHandle } from "./data-db";
@@ -157,9 +157,11 @@ export class ChatAgent extends Think<Env> {
       try {
         this._cachedChatContext = await this.resolveChatContext();
       } catch (err) {
-        console.warn("beforeTurn: chat context resolve failed", {
+        logEvent({
+          event: "chat.context_resolve_failed",
+          level: "warn",
           chatId: this.name,
-          err: (err as Error).message,
+          error: truncateMessage(err),
         });
       }
     }
@@ -183,6 +185,10 @@ export class ChatAgent extends Think<Env> {
       }
     }
 
+    // Mark the turn start for observability span timing (9fa055).
+    // `onChatResponse` / `onChatError` read this to compute durationMs.
+    this._turnStartedAt = Date.now();
+
     // Audit (1dd311) — record turn.start. Best-effort, never blocks.
     if (tenantId) {
       this.ctx.waitUntil(
@@ -196,6 +202,16 @@ export class ChatAgent extends Think<Env> {
         })
       );
     }
+
+    // Observability: turn-start span.
+    logEvent({
+      event: "chat.turn_start",
+      chatId: this.name,
+      tenantId: tenantId ?? null,
+      userId: this._currentTurnUserId ?? null,
+      dbProfileId: this._cachedChatContext?.dbProfileId ?? null,
+      model: this._modelId,
+    });
 
     return { system: buildSystemPrompt(this._cachedChatContext) };
   }
@@ -311,9 +327,26 @@ export class ChatAgent extends Think<Env> {
   override async onChatResponse(result: ChatResponseResult): Promise<void> {
     const tenantId = this._cachedChatContext?.tenantId;
     const tokens = { ...this._currentTurnTokens };
+    const durationMs = this._turnStartedAt > 0 ? Date.now() - this._turnStartedAt : null;
     // Reset BEFORE the await — next turn could start before the audit
     // insert completes, and we don't want carryover.
     this._currentTurnTokens = this._zeroTokens();
+    this._turnStartedAt = 0;
+
+    // Observability span (9fa055) — fires for *every* completed turn,
+    // even when no tenant is resolvable (so we can debug bad routing).
+    logEvent({
+      event: "chat.turn_complete",
+      chatId: this.name,
+      tenantId: tenantId ?? null,
+      userId: this._currentTurnUserId ?? null,
+      status: result.status,
+      durationMs,
+      model: this._modelId,
+      gatewayId: this.env.AI_GATEWAY_ID ?? null,
+      tokens,
+    });
+
     if (!tenantId) return;
     this.ctx.waitUntil(
       auditFromAgent(this.env, {
@@ -325,6 +358,7 @@ export class ChatAgent extends Think<Env> {
         payload: {
           status: result.status,
           tokens,
+          durationMs,
           gateway: {
             id: this.env.AI_GATEWAY_ID ?? null,
             model: this._modelId,
@@ -342,9 +376,31 @@ export class ChatAgent extends Think<Env> {
    */
   private _modelId: string = DEFAULT_MODEL;
 
+  /** Wall-clock start of the current turn (9fa055). */
+  private _turnStartedAt: number = 0;
+
   /** Audit hook (1dd311) — turn errored. */
   override onChatError(error: unknown): unknown {
     const tenantId = this._cachedChatContext?.tenantId;
+    const durationMs = this._turnStartedAt > 0 ? Date.now() - this._turnStartedAt : null;
+    // Reset turn timer so a follow-on turn can't measure against
+    // the failed one.
+    this._turnStartedAt = 0;
+
+    // Observability span (9fa055).
+    logEvent({
+      event: "chat.turn_error",
+      level: "error",
+      chatId: this.name,
+      tenantId: tenantId ?? null,
+      userId: this._currentTurnUserId ?? null,
+      durationMs,
+      model: this._modelId,
+      // Use the same truncation envelope as audit so logs and audit
+      // rows reference the same error text.
+      error: truncateMessage(error, 240),
+    });
+
     if (tenantId) {
       this.ctx.waitUntil(
         auditFromAgent(this.env, {
@@ -371,9 +427,24 @@ export class ChatAgent extends Think<Env> {
    */
   override async afterToolCall(ctx: ToolCallResultContext): Promise<void> {
     const tenantId = this._cachedChatContext?.tenantId;
-    if (!tenantId) return;
-
     const name = ctx.toolName;
+
+    // Observability span (9fa055) — fires for every tool call, even
+    // un-audited ones. Lets us spot pathological model behavior
+    // (e.g. spinning on chart tools, oscillating between db_query
+    // variants) without enabling debug-level logging.
+    logEvent({
+      event: "chat.tool_call",
+      level: ctx.success ? "info" : "warn",
+      chatId: this.name,
+      tenantId: tenantId ?? null,
+      userId: this._currentTurnUserId ?? null,
+      tool: name,
+      success: ctx.success,
+      durationMs: ctx.durationMs,
+    });
+
+    if (!tenantId) return;
     // Only audit a curated set: data access + persistence. Sandbox
     // execution itself isn't a separate audit event — `turn.complete`
     // already captures that the turn ran.
