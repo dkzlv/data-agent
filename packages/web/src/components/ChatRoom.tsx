@@ -17,6 +17,7 @@
 import type { FormEvent, KeyboardEvent } from "react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { UIMessage } from "ai";
+import { decodeAgentError } from "@data-agent/shared";
 import { useAgent } from "agents/react";
 import { useAgentChat } from "@cloudflare/ai-chat/react";
 import { useQueryClient } from "@tanstack/react-query";
@@ -276,6 +277,55 @@ export function ChatRoom({
   const isTurnInFlight =
     chat.status === "streaming" || chat.status === "submitted" || chat.isServerStreaming;
 
+  // Clear stale generic stream errors after a clean turn.
+  //
+  // Scenario (papercut 247274): user refreshes the tab mid-turn. The
+  // server's resumable-stream re-broadcasts the buffered chunks; if
+  // any non-fatal accumulator chunk had `error: true` (e.g. a
+  // mid-stream warning surfaced by the AI SDK), the @cloudflare/ai-chat
+  // transport treats it as a terminal stream error — even though the
+  // server kept streaming and ultimately produced a complete answer.
+  // The user sees the assistant's full response AND a spurious
+  // "Something went wrong" banner.
+  //
+  // Heuristic: only clear *unrecognized* errors (the generic
+  // "Something went wrong" fallback). Anything decoded via
+  // `decodeAgentError` — rate limits, SQL errors, sandbox timeouts —
+  // is a real failure the chat-agent intentionally surfaced, so the
+  // banner stays. We also gate on `status === "ready"` (turn fully
+  // settled) and the presence of a completed assistant message —
+  // without those, an in-flight or empty turn might briefly look
+  // "complete" and hide a legitimate error.
+  const chatStatus = chat.status;
+  const chatError = chat.error;
+  const chatMessages = chat.messages;
+  const chatClearError = chat.clearError;
+  useEffect(() => {
+    if (!chatError) return;
+    if (chatStatus !== "ready") return;
+    // Preserve known-code errors — those are anticipated server-side
+    // failures the user should see.
+    if (chatError.message && decodeAgentError(chatError.message)) return;
+    const last = chatMessages[chatMessages.length - 1] as UIMessage | undefined;
+    if (!last || last.role !== "assistant") return;
+    const parts = (last.parts as unknown as UIPart[]) ?? [];
+    const hasUsableContent = parts.some((p) => {
+      if (p.type === "text" && typeof p.text === "string" && p.text.trim().length > 0) {
+        return true;
+      }
+      // Completed tool calls also count — a turn that fetched data
+      // and emitted an artifact is a usable answer even without a
+      // wrap-up text part.
+      if (p.type?.startsWith("tool-") && p.state === "output-available") {
+        return true;
+      }
+      return false;
+    });
+    if (hasUsableContent) {
+      chatClearError();
+    }
+  }, [chatError, chatStatus, chatMessages, chatClearError]);
+
   // The composer itself is only fully disabled until the WS is ready
   // (i.e. you can't type into a not-yet-connected chat). While a turn
   // is in flight, the textarea stays enabled so the user can compose
@@ -290,52 +340,64 @@ export function ChatRoom({
   // because `chat.messages.length` becomes > 0.
   const showDemoSuggestions = isSampleDb && isReady && chat.messages.length === 0;
 
+  // Layout notes (papercut 247274):
+  //
+  // 1. The workspace sidebar runs the full chat height so its left
+  //    border butts cleanly against the chat header's bottom border.
+  //    Earlier the header sat above both columns and the sidebar
+  //    started below it, leaving a visible notch where the two
+  //    borders met (image 1).
+  // 2. The outer row uses `min-h-0` (instead of `overflow-hidden`)
+  //    to bound flex children to the parent height. `overflow-hidden`
+  //    on the row was clipping the composer's focus ring + 1px
+  //    border-radius at the inner column edge — surfacing as a
+  //    squared-off top-left corner on the input box (image 2). The
+  //    Radix ScrollArea owns its own overflow handling internally,
+  //    so the row doesn't need to clip.
   return (
-    <div className="flex h-[calc(100dvh-7rem)] flex-col gap-3">
-      {displayedTitle ? (
-        <header className="flex items-center justify-between gap-3 border-b border-border pb-3">
-          <h1 className="truncate text-lg font-semibold tracking-tight sm:text-xl">
-            {displayedTitle}
-          </h1>
-          <div className="flex items-center gap-2 text-xs text-muted-foreground">
-            <PresenceBadges users={presence} directory={memberDirectory} />
-            <MembersPopover members={members} active={presence} />
-            <WorkspaceMobileTrigger chatId={chatId} />
-          </div>
-        </header>
-      ) : null}
+    <div className="flex h-[calc(100dvh-7rem)] min-h-0 gap-0">
+      <div className="flex min-w-0 min-h-0 flex-1 flex-col gap-3">
+        {displayedTitle ? (
+          <header className="flex items-center justify-between gap-3 border-b border-border pb-3">
+            <h1 className="truncate text-lg font-semibold tracking-tight sm:text-xl">
+              {displayedTitle}
+            </h1>
+            <div className="flex items-center gap-2 text-xs text-muted-foreground">
+              <PresenceBadges users={presence} directory={memberDirectory} />
+              <MembersPopover members={members} active={presence} />
+              <WorkspaceMobileTrigger chatId={chatId} />
+            </div>
+          </header>
+        ) : null}
 
-      <div className="flex flex-1 gap-0 overflow-hidden">
-        <div className="flex min-w-0 flex-1 flex-col gap-3">
-          {isReady ? (
-            <MessageList
-              messages={chat.messages as UIMessage[]}
-              status={chat.status}
-              error={chat.error}
-              isSampleDb={isSampleDb}
-            />
-          ) : (
-            <MessageListSkeleton />
-          )}
-
-          {showDemoSuggestions && (
-            <DemoSuggestions
-              prompts={EMPLOYEES_DEMO_PROMPTS}
-              disabled={composerLocked || isTurnInFlight}
-              onPick={handleSend}
-            />
-          )}
-
-          <Composer
-            locked={composerLocked}
-            isStreaming={isTurnInFlight}
-            onSubmit={handleSend}
-            onStop={handleStop}
+        {isReady ? (
+          <MessageList
+            messages={chat.messages as UIMessage[]}
+            status={chat.status}
+            error={chat.error}
+            isSampleDb={isSampleDb}
           />
-        </div>
+        ) : (
+          <MessageListSkeleton />
+        )}
 
-        <WorkspaceSidebar chatId={chatId} />
+        {showDemoSuggestions && (
+          <DemoSuggestions
+            prompts={EMPLOYEES_DEMO_PROMPTS}
+            disabled={composerLocked || isTurnInFlight}
+            onPick={handleSend}
+          />
+        )}
+
+        <Composer
+          locked={composerLocked}
+          isStreaming={isTurnInFlight}
+          onSubmit={handleSend}
+          onStop={handleStop}
+        />
       </div>
+
+      <WorkspaceSidebar chatId={chatId} />
     </div>
   );
 }
