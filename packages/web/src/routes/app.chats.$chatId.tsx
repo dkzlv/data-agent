@@ -34,7 +34,7 @@ function ChatDetail() {
       {chat.data && (
         <div className="flex flex-1 gap-0 overflow-hidden">
           <div className="mx-auto flex max-w-4xl flex-1 flex-col px-1">
-            <ChatRoom chatId={chatId} title={chat.data.chat.title} />
+            <ChatRoom chatId={chatId} title={chat.data.chat.title} members={chat.data.members} />
           </div>
           <WorkspaceSidebar chatId={chatId} />
         </div>

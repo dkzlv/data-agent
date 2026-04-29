@@ -22,13 +22,22 @@ import remarkGfm from "remark-gfm";
 import { ArtifactViewer, asArtifactRef } from "./ArtifactViewer";
 import { getChatHost } from "~/lib/chat-host";
 
+export interface ChatMemberSummary {
+  userId: string;
+  name: string;
+  email: string;
+  role: "owner" | "participant";
+}
+
 interface ChatRoomProps {
   chatId: string;
   /** Optional title shown above the message list. */
   title?: string;
+  /** Members of this chat — used to render presence display names. */
+  members?: ChatMemberSummary[];
 }
 
-export function ChatRoom({ chatId, title }: ChatRoomProps): React.ReactElement {
+export function ChatRoom({ chatId, title, members = [] }: ChatRoomProps): React.ReactElement {
   const host = useMemo(() => getChatHost(), []);
 
   const agent = useAgent({
@@ -53,6 +62,11 @@ export function ChatRoom({ chatId, title }: ChatRoomProps): React.ReactElement {
   // Presence: the ChatAgent broadcasts `{ type: 'data_agent_presence',
   // users: [{ userId, joinedAt }] }` whenever the connected set changes.
   const [presence, setPresence] = useState<{ userId: string; joinedAt: number }[]>([]);
+  const memberDirectory = useMemo(() => {
+    const map = new Map<string, ChatMemberSummary>();
+    for (const m of members) map.set(m.userId, m);
+    return map;
+  }, [members]);
   useEffect(() => {
     const onMsg = (e: MessageEvent) => {
       const raw = typeof e.data === "string" ? e.data : "";
@@ -78,7 +92,10 @@ export function ChatRoom({ chatId, title }: ChatRoomProps): React.ReactElement {
       {title ? (
         <header className="flex items-center justify-between gap-3 border-b border-neutral-200 pb-3 dark:border-neutral-800">
           <h1 className="text-2xl font-semibold tracking-tight">{title}</h1>
-          <PresenceBadges users={presence} />
+          <div className="flex items-center gap-3 text-xs text-neutral-500">
+            <MembersPopover members={members} active={presence} />
+            <PresenceBadges users={presence} directory={memberDirectory} />
+          </div>
         </header>
       ) : null}
 
@@ -236,30 +253,110 @@ function safeJsonStringify(v: unknown): string {
   }
 }
 
-function PresenceBadges({ users }: { users: { userId: string; joinedAt: number }[] }) {
+function MembersPopover({
+  members,
+  active,
+}: {
+  members: ChatMemberSummary[];
+  active: { userId: string; joinedAt: number }[];
+}) {
+  const [open, setOpen] = useState(false);
+  if (members.length === 0) return null;
+  const activeIds = new Set(active.map((u) => u.userId));
+  return (
+    <div className="relative">
+      <button
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        className="rounded-md px-2 py-1 hover:bg-neutral-100 dark:hover:bg-neutral-800"
+        aria-haspopup
+        aria-expanded={open}
+      >
+        {members.length} member{members.length === 1 ? "" : "s"}
+      </button>
+      {open && (
+        <div
+          role="dialog"
+          className="absolute right-0 top-full z-10 mt-1 w-64 overflow-hidden rounded-lg border border-neutral-200 bg-white shadow-lg dark:border-neutral-800 dark:bg-neutral-950"
+          onMouseLeave={() => setOpen(false)}
+        >
+          <ul className="max-h-72 overflow-y-auto py-1">
+            {members.map((m) => (
+              <li key={m.userId} className="flex items-center gap-2 px-3 py-2 text-xs">
+                <span
+                  className="inline-block h-2 w-2 rounded-full"
+                  style={{ background: activeIds.has(m.userId) ? "#10b981" : "#a3a3a3" }}
+                  aria-label={activeIds.has(m.userId) ? "online" : "offline"}
+                />
+                <span className="min-w-0 flex-1">
+                  <span className="block truncate font-medium text-neutral-800 dark:text-neutral-100">
+                    {m.name || m.email}
+                  </span>
+                  {m.name && (
+                    <span className="block truncate text-[10px] text-neutral-500">{m.email}</span>
+                  )}
+                </span>
+                <span className="text-[10px] uppercase tracking-wide text-neutral-400">
+                  {m.role}
+                </span>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function PresenceBadges({
+  users,
+  directory,
+}: {
+  users: { userId: string; joinedAt: number }[];
+  directory: Map<string, ChatMemberSummary>;
+}) {
   if (users.length <= 1) return null;
-  // Render up to 4 colored circles with initials. We don't have user
-  // display names on the wire yet (only ids); use the first 2 chars
-  // of the id as a placeholder. dea3ff hooks in proper member lookup.
+  // Render up to 4 colored circles. Initials and tooltips come from the
+  // member directory (display name → first letter of given + family,
+  // falling back to email or userId truncation).
   const visible = users.slice(0, 4);
   const overflow = users.length - visible.length;
+  const tooltipList = users
+    .map((u) => directory.get(u.userId)?.name ?? directory.get(u.userId)?.email ?? u.userId)
+    .join(", ");
   return (
-    <div className="flex items-center gap-1.5" title={`${users.length} active`}>
+    <div className="flex items-center gap-1.5" title={tooltipList}>
       <div className="flex -space-x-1.5">
-        {visible.map((u) => (
-          <span
-            key={u.userId}
-            className="inline-flex h-6 w-6 items-center justify-center rounded-full border-2 border-neutral-50 bg-neutral-200 text-[9px] font-semibold uppercase text-neutral-700 ring-1 ring-neutral-300 dark:border-neutral-950 dark:bg-neutral-700 dark:text-neutral-100 dark:ring-neutral-600"
-            style={{ background: idToColor(u.userId) }}
-            title={u.userId}
-          >
-            {u.userId.slice(0, 2)}
-          </span>
-        ))}
+        {visible.map((u) => {
+          const member = directory.get(u.userId);
+          const display = member?.name ?? member?.email ?? u.userId;
+          const initials = nameToInitials(display);
+          return (
+            <span
+              key={u.userId}
+              className="inline-flex h-6 w-6 items-center justify-center rounded-full border-2 border-neutral-50 bg-neutral-200 text-[9px] font-semibold uppercase text-neutral-700 ring-1 ring-neutral-300 dark:border-neutral-950 dark:bg-neutral-700 dark:text-neutral-100 dark:ring-neutral-600"
+              style={{ background: idToColor(u.userId) }}
+              title={display}
+            >
+              {initials}
+            </span>
+          );
+        })}
       </div>
       {overflow > 0 && <span className="text-[10px] text-neutral-500">+{overflow}</span>}
     </div>
   );
+}
+
+function nameToInitials(name: string): string {
+  // Strip emails to local-part, then take first letters of up to two
+  // tokens. Single-token names use the first 2 letters.
+  const trimmed = name.includes("@") ? name.split("@")[0]! : name;
+  const parts = trimmed.split(/[\s._-]+/).filter(Boolean);
+  if (parts.length >= 2) {
+    return ((parts[0]?.[0] ?? "") + (parts[parts.length - 1]?.[0] ?? "")).toUpperCase();
+  }
+  return (parts[0] ?? "").slice(0, 2).toUpperCase() || "?";
 }
 
 function idToColor(id: string): string {
