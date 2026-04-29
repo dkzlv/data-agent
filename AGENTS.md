@@ -304,6 +304,7 @@ in the dashboard. Stable event names (so saved queries don't break):
 | `chat.history_repaired` | chat-agent | beforeTurn rewrote dangling tool parts from an aborted prior turn |
 | `chat.history_repair_failed` | chat-agent | the repair pass itself threw (best-effort, turn proceeds anyway) |
 | `chat.reasoning_stamp_failed` | chat-agent | failed to stamp measured reasoning elapsedMs onto the assistant message (UI label only; non-blocking) |
+| `chat.cancel_received` | chat-agent | observed a `cf_agent_chat_request_cancel` WS frame (stop button or programmatic `chat.stop()`); pairs with the next `chat.turn_complete status="aborted"` for the same `turnId` and disambiguates client-cancel vs server-internal abort |
 | `ws.upgrade` / `ws.upgrade_response` / `ws.upgrade_failed` | api-gateway | WS reverse-proxy boundary |
 
 Every chat-agent event carries a `turnId` (for in-turn events) or
@@ -429,6 +430,33 @@ If the user reports it: ask them for the **browser console log** of
 the chat-room WS lifecycle. The web client logs structured close
 events with codeLabel (1001=tab closed, 1006=network flap, etc),
 sessionMs, document.visibilityState, and navigator.onLine.
+
+#### `status: "aborted"` triage (added after chat e05ce53c)
+
+The agents-SDK marks a turn `aborted` only when an internal abort
+signal fires. Disambiguate using two fields that now flow into
+both the `chat.turn_complete` Workers Logs event AND the
+`turn.complete` audit row payload:
+
+- `cancelReceived: true` → the DO observed a
+  `cf_agent_chat_request_cancel` WS frame this turn. Origin is
+  the stop button or a programmatic `chat.stop()` from the
+  client. Confirm with the matching `chat.cancel_received` log
+  event (same `turnId`); `cancelReceivedFrom` is the userId.
+- `cancelReceived: false` + `abortLikelyFrom: "client_disconnect"`
+  → no active WS at completion; tab close path. Note that
+  `@cloudflare/ai-chat@0.5.4`'s `onClose` does NOT abort by
+  itself (verified in `node_modules`), so this case is rare and
+  worth digging into.
+- `cancelReceived: false` + `abortLikelyFrom: "server_signal"`
+  → server-internal abort. We don't call `abortRequest`, so this
+  most likely means the AI SDK escalated a stream-level error
+  to an abort. Look at `chat.codemode_sandbox_error`,
+  `chat.turn_chunk` (last `chunkType`), and the AI Gateway log
+  for the same chat to localize.
+
+The audit DB alone is enough for this triage now — no Workers
+Logs round-trip required.
 
 ### Clear a stuck chat
 

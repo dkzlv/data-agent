@@ -407,6 +407,11 @@ export class ChatAgent extends Think<Env> {
     // Reasoning timer reset — see `_reasoningStartedAt` field comment.
     this._reasoningStartedAt = null;
     this._reasoningElapsedMs = 0;
+    // Cancel-frame tracker reset — see `_cancelReceivedAt` field
+    // comment. Cleared at the *start* of each turn so a stale flag
+    // from a previous turn never bleeds into this one's diagnostics.
+    this._cancelReceivedAt = 0;
+    this._cancelReceivedFrom = null;
 
     // Audit (1dd311) — record turn.start. Best-effort, never blocks.
     if (tenantId) {
@@ -828,6 +833,36 @@ export class ChatAgent extends Think<Env> {
     // even when no tenant is resolvable (so we can debug bad routing).
     // status: "completed" | "aborted" | "error".
     const msSinceLastChunk = this._lastChunkAt > 0 ? Date.now() - this._lastChunkAt : null;
+
+    // Abort attribution (chat e05ce53c). Three levels of certainty:
+    //
+    //   - "client_cancel" — we observed a `cf_agent_chat_request_cancel`
+    //     frame on the WS this turn → user clicked the stop button (or
+    //     a programmatic `chat.stop()` fired). Most reliable: it's a
+    //     direct signal, not a heuristic.
+    //   - "client_disconnect" — turn aborted with NO active WS at the
+    //     moment `onChatResponse` fired AND no cancel frame was seen.
+    //     Tab closed mid-stream and the SDK propagated the implicit
+    //     abort. (Note: ai-chat 0.5.4's onClose does NOT abort by
+    //     itself, so this in practice means an explicit unmount path
+    //     in a future SDK version, not pure WS drop.)
+    //   - "server_signal" — turn aborted with the WS still open and
+    //     no client cancel frame. Internal abort: our own
+    //     `abortRequest` (we don't call it), an AI SDK stream-error
+    //     escalated to abort, or a Think framework path. Look at
+    //     `chat.turn_chunk` / `chat.codemode_sandbox_error` /
+    //     `chat.turn_step` around the same `turnId` to localize.
+    const abortLikelyFrom =
+      result.status === "aborted"
+        ? this._cancelReceivedAt > 0
+          ? "client_cancel"
+          : countConnections(this) === 0
+            ? "client_disconnect"
+            : "server_signal"
+        : null;
+    const cancelReceivedMsBeforeComplete =
+      this._cancelReceivedAt > 0 ? Date.now() - this._cancelReceivedAt : null;
+
     logEvent({
       event: "chat.turn_complete",
       chatId: this.name,
@@ -845,15 +880,15 @@ export class ChatAgent extends Think<Env> {
       msSinceLastChunk,
       toolCalls: [...this._toolCalls],
       connections: countConnections(this),
-      // Aborts in particular: which side aborted? If the WS already
-      // closed before this fires, count == 0 → client disconnected.
-      // If count > 0, server-side abort (signal fired internally).
-      abortLikelyFrom:
-        result.status === "aborted"
-          ? countConnections(this) === 0
-            ? "client_disconnect"
-            : "server_signal"
-          : null,
+      abortLikelyFrom,
+      // Direct cancel-frame evidence. `cancelReceivedFrom` is the
+      // userId the cancel arrived from (so a future multi-user chat
+      // can show "Alice cancelled Bob's turn"). `msBeforeComplete`
+      // is how long after the cancel the turn actually wound down
+      // — helps spot cases where the SDK was slow to honor cancel.
+      cancelReceived: this._cancelReceivedAt > 0,
+      cancelReceivedFrom: this._cancelReceivedFrom,
+      cancelReceivedMsBeforeComplete,
     });
 
     if (!tenantId) return;
@@ -872,6 +907,13 @@ export class ChatAgent extends Think<Env> {
             id: this.env.AI_GATEWAY_ID ?? null,
             model: this._modelId,
           },
+          // Audit-DB-only triage (chat e05ce53c). With these two
+          // fields on the row, an operator can answer "why did that
+          // turn abort?" from `inspect-turn.ts` alone, without a
+          // Workers Logs round-trip. See the field comment on
+          // `_cancelReceivedAt` for the attribution semantics.
+          abortLikelyFrom,
+          cancelReceived: this._cancelReceivedAt > 0,
         },
       })
     );
@@ -923,6 +965,37 @@ export class ChatAgent extends Think<Env> {
   private _chunkCount: number = 0;
   private _stepCount: number = 0;
   private _toolCalls: string[] = [];
+
+  /**
+   * Cancel-frame tracker for the current turn (chat e05ce53c).
+   *
+   * The agents-SDK marks a turn `status: "aborted"` whenever its
+   * internal `AbortRegistry` fires. The known triggers are:
+   *
+   *   1. Client sends `cf_agent_chat_request_cancel` (the stop
+   *      button or the v0.5.4 `chat.stop()` path).
+   *   2. Server-side `abortRequest`/`abortAllRequests` RPC.
+   *   3. An external `signal` linked into `saveMessages` /
+   *      `continueLastTurn`.
+   *
+   * For chat e05ce53c we saw `aborted` *without* a stop-button click
+   * and (per `@cloudflare/ai-chat@0.5.4`) without an unmount-cancel
+   * path, which left an awkward gap in the diagnosis. Stamping the
+   * timestamp + source of the cancel frame whenever we observe one
+   * lets `chat.turn_complete` and the `turn.complete` audit row
+   * disambiguate cases 1 vs 2/3 directly:
+   *
+   *   - `cancelReceived` truthy → client cancel frame (stop button
+   *     in the active tab, or `stop()` from a different surface).
+   *   - `aborted` + no `cancelReceived` → server-side abort
+   *     (something we did, or AI SDK escalated a stream-error to
+   *     an abort) → look in turn_chunk / turn_step / sandbox_error.
+   *
+   * Both fields reset in `beforeTurn`. `_cancelReceivedAt = 0` means
+   * "no cancel observed for the current turn".
+   */
+  private _cancelReceivedAt: number = 0;
+  private _cancelReceivedFrom: string | null = null;
 
   /**
    * Reasoning-time bookkeeping for the current turn. We stamp the
@@ -980,6 +1053,13 @@ export class ChatAgent extends Think<Env> {
     // the failed one. (Heartbeat fields are reset in beforeTurn.)
     this._turnStartedAt = 0;
 
+    // Cancel-frame attribution mirrors `onChatResponse`'s logic so
+    // that error-path aborts (e.g. AI SDK escalating an abort to
+    // an error) are still tagged client_cancel when we observed
+    // the cancel frame ourselves.
+    const cancelReceived = this._cancelReceivedAt > 0;
+    const cancelReceivedFrom = this._cancelReceivedFrom;
+
     // Observability span (9fa055).
     logEvent({
       event: "chat.turn_error",
@@ -1002,6 +1082,12 @@ export class ChatAgent extends Think<Env> {
       errorMessage: errInfo.message,
       errorCause: errInfo.cause,
       isAbort: errInfo.isAbort,
+      // Cancel-frame evidence (chat e05ce53c). On error-path aborts
+      // we still want to know "did the user cancel, or did the
+      // model error out". `cancelReceived === true` + `isAbort ===
+      // true` is the unambiguous client-cancel signature.
+      cancelReceived,
+      cancelReceivedFrom,
     });
 
     if (tenantId) {
@@ -1023,6 +1109,8 @@ export class ChatAgent extends Think<Env> {
             lastChunkType,
             msSinceLastChunk,
             durationMs,
+            // Audit-DB-only triage parity with `turn.complete`.
+            cancelReceived,
           },
         })
       );
@@ -1347,6 +1435,49 @@ export class ChatAgent extends Think<Env> {
     type PresenceState = { userId?: string };
     const userId = (connection.state as PresenceState | undefined)?.userId;
     if (userId) this._currentTurnUserId = userId;
+
+    // Cancel-frame triage (chat e05ce53c). Peek at incoming WS frames
+    // for `cf_agent_chat_request_cancel` so we can attribute future
+    // `status: "aborted"` outcomes to the *client* (stop button) vs.
+    // a server-side / SDK-internal abort. We only inspect string
+    // frames — the cancel envelope is JSON over text. Any parse
+    // failure is silently swallowed; this is observability, not a
+    // gate, and we MUST forward the message to `super.onMessage` no
+    // matter what so the SDK's own dispatch still runs.
+    if (typeof message === "string") {
+      try {
+        const parsed = JSON.parse(message) as { type?: unknown; id?: unknown };
+        if (parsed && parsed.type === "cf_agent_chat_request_cancel") {
+          this._cancelReceivedAt = Date.now();
+          this._cancelReceivedFrom = userId ?? "unknown";
+          logEvent({
+            event: "chat.cancel_received",
+            level: "info",
+            chatId: this.name,
+            tenantId: this._cachedChatContext?.tenantId ?? null,
+            userId: userId ?? null,
+            connectionId: connection.id,
+            // Tying the cancel back to the in-flight turn lets us
+            // confirm in Workers Logs that this cancel matches the
+            // `aborted` we then see in `chat.turn_complete`.
+            turnId: this._turnId,
+            requestId: typeof parsed.id === "string" ? parsed.id : null,
+            // Time-since-turn-start tells us *how long* the user
+            // waited before bailing — useful for UX (e.g. "people
+            // give up after ~10s of silent reasoning"). Null if
+            // there's no in-flight turn (cancel arrived after the
+            // turn already settled — unusual but worth logging).
+            msSinceTurnStart:
+              this._turnStartedAt > 0 ? Date.now() - this._turnStartedAt : null,
+            activeConnections: countConnections(this),
+          });
+        }
+      } catch {
+        // Non-JSON or unparseable; ignore. The SDK will surface real
+        // protocol errors via its own paths.
+      }
+    }
+
     await super.onMessage(connection, message);
   }
 
