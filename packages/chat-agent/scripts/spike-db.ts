@@ -63,6 +63,10 @@ interface RPC {
     serverTime: string;
     serverVersion: string;
   }>;
+  dbToolsSmoke(): Promise<{
+    introspect: { schemas: number; tables: number };
+    query: { rowCount: number; firstRow: unknown };
+  }>;
 }
 
 async function setup() {
@@ -143,12 +147,7 @@ async function cleanup() {
   }
 }
 
-async function runHealthcheck(): Promise<{
-  ok: boolean;
-  profile: { id: string; name: string; database: string; host: string };
-  serverTime: string;
-  serverVersion: string;
-}> {
+async function withConnectedClient<T>(fn: (c: AgentClient<RPC>) => Promise<T>): Promise<T> {
   const token = await mintChatToken(SIGNING_KEY, {
     userId: TEST_USER_ID,
     chatId: TEST_CHAT_ID,
@@ -172,7 +171,7 @@ async function runHealthcheck(): Promise<{
     });
   });
   try {
-    return await c.call("dataDbHealthcheck", []);
+    return await fn(c);
   } finally {
     c.close();
   }
@@ -180,11 +179,11 @@ async function runHealthcheck(): Promise<{
 
 async function main() {
   console.log(`spike-db: chat=${TEST_CHAT_ID}\n`);
-  console.log("[1/3] Setting up control-plane fixtures…");
+  console.log("[1/4] Setting up control-plane fixtures…");
   await setup();
   try {
-    console.log("\n[2/3] Calling ChatAgent.dataDbHealthcheck() …");
-    const r = await runHealthcheck();
+    console.log("\n[2/4] Calling ChatAgent.dataDbHealthcheck() …");
+    const r = await withConnectedClient((c) => c.call("dataDbHealthcheck", []));
     console.log("  ✓ ok=" + r.ok);
     console.log("    profile :", r.profile);
     console.log("    server  :", r.serverTime, "/", r.serverVersion);
@@ -196,11 +195,30 @@ async function main() {
     if (Math.abs(Date.now() - new Date(r.serverTime).getTime()) > 30_000) {
       throw new Error("server time skew >30s — clock issue?");
     }
-    console.log("\n[3/3] Cleanup…");
+
+    console.log("\n[3/4] Calling ChatAgent.dbToolsSmoke() — introspect + query …");
+    const tools = await withConnectedClient((c) => c.call("dbToolsSmoke", []));
+    console.log(
+      "  ✓ introspect: schemas=" + tools.introspect.schemas + " tables=" + tools.introspect.tables
+    );
+    console.log(
+      "  ✓ query rowCount=" +
+        tools.query.rowCount +
+        " firstRow=" +
+        JSON.stringify(tools.query.firstRow)
+    );
+    if (tools.introspect.tables < 1)
+      throw new Error("introspect saw no tables — control-plane should have many");
+    if (tools.query.rowCount !== 1) throw new Error("expected exactly 1 row from SELECT 1+1");
+    const two = (tools.query.firstRow as { two?: unknown })?.two;
+    if (two !== 2 && two !== "2")
+      throw new Error("expected SELECT 1+1 → 2, got " + JSON.stringify(two));
+
+    console.log("\n[4/4] Cleanup…");
   } finally {
     await cleanup();
   }
-  console.log("\n✓ data-db connection works end-to-end");
+  console.log("\n✓ data-db connection + db.* tools work end-to-end");
 }
 
 main().catch(async (e) => {

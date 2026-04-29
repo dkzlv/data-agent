@@ -7,6 +7,7 @@ import { createCodeTool } from "@cloudflare/codemode/ai";
 import type { LanguageModel, ToolSet } from "ai";
 import { createWorkersAI } from "workers-ai-provider";
 import { getDataDb, resetDataDb, type AgentLike, type CachedHandle } from "./data-db";
+import { dbTools } from "./tools/db-tools";
 import type { Env } from "./env";
 
 /**
@@ -15,16 +16,19 @@ import type { Env } from "./env";
  */
 const DEFAULT_MODEL = "@cf/moonshotai/kimi-k2.6";
 
-const SYSTEM_PROMPT = `You are a data analyst inside a chat. The user has a workspace with files you can read/write, and (in later turns) a Postgres database connected via tools.
+const SYSTEM_PROMPT = `You are a data analyst inside a chat. The user has a workspace with files you can read/write, and a Postgres database accessible via tools.
 
 You have ONE tool: \`codemode\`. To do anything, write a small async TypeScript arrow function that uses the available APIs and returns the result.
 
 Available APIs inside codemode:
-- \`state.*\` — workspace filesystem (readFile, writeFile, readDir, mkdir, exists, …)
+- \`db.introspect()\` — schema snapshot (tables, columns, FKs, est. rows). Always call this first if you don't know the schema.
+- \`db.query(sql, params?)\` — read-only SELECT/WITH/EXPLAIN. Use \`$1\`, \`$2\` placeholders; never interpolate values into the SQL string. Results are auto-capped at 5000 rows / 4 MB / 15 s.
+- \`state.*\` — workspace filesystem (readFile, writeFile, readDir, mkdir, exists, …) for caching analysis between turns.
 
 Workflow:
 - Think briefly, then write code that does the work.
-- Always show your reasoning + the code in the final answer.
+- For data questions, START with db.introspect() if you don't already know the schema.
+- Show the SQL you ran and a concise summary of findings (numbers + interpretation).
 - Be concise.
 
 Refuse to do anything outside the data-analysis scope.`;
@@ -103,8 +107,9 @@ export class ChatAgent extends Think<Env> {
       timeout: 30_000,
       globalOutbound: null,
     });
+    const host = this._dataDbHost;
     const codemode = createCodeTool({
-      tools: [stateTools(this.workspace)],
+      tools: [stateTools(this.workspace), dbTools(() => getDataDb(host))],
       executor,
     });
     return { codemode };
@@ -158,5 +163,37 @@ export class ChatAgent extends Think<Env> {
   async dataDbReset(): Promise<{ ok: true }> {
     await resetDataDb(this._dataDbHost);
     return { ok: true };
+  }
+
+  /**
+   * RPC for spike harnesses: directly invoke `db.introspect()` and a tiny
+   * `db.query()` to verify the tool wiring without going through the LLM.
+   * Returns the *number of schemas + tables seen* and the result of a
+   * canonical `SELECT 1+1` to keep the payload small.
+   */
+  @callable()
+  async dbToolsSmoke(): Promise<{
+    introspect: { schemas: number; tables: number };
+    query: { rowCount: number; firstRow: unknown };
+  }> {
+    const provider = dbTools(() => getDataDb(this._dataDbHost));
+    const tools = provider.tools as Record<
+      string,
+      { execute: (...args: unknown[]) => Promise<unknown> }
+    >;
+    const introspectFn = tools.introspect!.execute as () => Promise<{
+      schemas: { tables: unknown[] }[];
+    }>;
+    const queryFn = tools.query!.execute as (...args: unknown[]) => Promise<{
+      rows: unknown[];
+      rowCount: number;
+    }>;
+    const intro = await introspectFn();
+    const tables = intro.schemas.reduce((n, s) => n + s.tables.length, 0);
+    const q = await queryFn("SELECT 1 + 1 AS two", []);
+    return {
+      introspect: { schemas: intro.schemas.length, tables },
+      query: { rowCount: q.rowCount, firstRow: q.rows[0] },
+    };
   }
 }

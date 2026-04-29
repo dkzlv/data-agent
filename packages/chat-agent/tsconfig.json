@@ -7,5 +7,6 @@
     "types": ["@cloudflare/workers-types"]
   },
   "include": ["src/**/*.ts"],
-  "references": [{ "path": "../shared" }]
+  "exclude": ["src/**/*.test.ts", "dist", "node_modules"],
+  "references": [{ "path": "../shared" }, { "path": "../db" }]
 }
