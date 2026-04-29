@@ -6,5 +6,6 @@
     "noEmit": false,
     "lib": ["ES2023", "WebWorker"]
   },
-  "include": ["src/**/*.ts"]
+  "include": ["src/**/*.ts"],
+  "exclude": ["src/**/*.test.ts", "dist", "node_modules"]
 }
