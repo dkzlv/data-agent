@@ -15,6 +15,13 @@
       "when": 1777444183381,
       "tag": "0001_careless_tarantula",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1777444596265,
+      "tag": "0002_brief_star_brand",
+      "breakpoints": true
     }
   ]
 }

@@ -1,5 +1,8 @@
-// Drizzle schema. Domain tables live in their own files.
-// Full domain schema lands in subtask c97933.
+// Drizzle schema.
 
 export * from "./_health";
 export * from "./auth";
+export * from "./tenant";
+export * from "./db-profile";
+export * from "./chat";
+export * from "./audit";
