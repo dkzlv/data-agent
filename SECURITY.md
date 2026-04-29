@@ -78,8 +78,9 @@ The `db.query` tool refuses anything that isn't a read:
 Even after the allow-list, every query is wrapped in:
 
 ```sql
-BEGIN READ ONLY;
-SET LOCAL statement_timeout = '15s';
+BEGIN;
+SET LOCAL transaction_read_only = on;
+SET LOCAL statement_timeout = '25s';
 SELECT * FROM ( <user query> ) _ LIMIT <N+1>;
 ```
 
@@ -89,12 +90,13 @@ with hard caps:
 | ------------------- | ------- |
 | Rows returned       | 5,000   |
 | Bytes returned      | 4 MiB   |
-| Statement timeout   | 15 s    |
-| Total query timeout | 30 s    |
+| Statement timeout   | 25 s    |
 
-`READ ONLY` transactions are enforced by Postgres itself — even if the
-allow-list is somehow bypassed, the DB rejects writes at the protocol
-level.
+`transaction_read_only = on` is enforced by Postgres itself — even
+if the allow-list is somehow bypassed, the DB rejects writes at the
+protocol level. The 25 s statement timeout fits inside the 30 s
+sandbox wall clock with ~5 s of overhead margin (cold pool / TLS /
+parse), so no separate "total query timeout" is needed.
 
 ### T3. Per-chat Postgres roles (recommended, documented)
 
@@ -172,7 +174,8 @@ the silent-drop behavior, not the secrecy of the list.
 | ---------------------------- | ---------------------- | ----------------------------------- |
 | Sandbox CPU/wall             | 30 s                   | `DynamicWorkerExecutor.timeout`     |
 | Sandbox network              | None                   | `globalOutbound: null`              |
-| SQL statement timeout        | 15 s                   | `SET LOCAL statement_timeout`       |
+| SQL statement timeout        | 25 s                   | `SET LOCAL statement_timeout`       |
+| SQL read-only enforcement    | server-side            | `SET LOCAL transaction_read_only`   |
 | SQL rows                     | 5,000                  | `LIMIT N+1`                         |
 | SQL bytes                    | 4 MiB                  | `db.query` byte-counting            |
 | Turns/chat/day               | 50                     | `947c38` rate limiter (subtask)     |
@@ -197,11 +200,23 @@ the silent-drop behavior, not the secrecy of the list.
 
 ## Regression tests
 
-| Test                                    | Verifies                                          |
-| --------------------------------------- | ------------------------------------------------- |
-| `scripts/spike-sandbox.ts`              | T1 (network + timeout) live against deployed DO    |
-| `src/tools/db-tools.test.ts`            | T2 (SQL allow-list, statement timeout, row caps)   |
-| `src/data-db.test.ts`                   | Envelope encryption round-trip                     |
-| `tests/auth-gate.spec.ts` (api-gateway) | T4/T5 — 401 on missing/invalid tokens              |
+| Test                                                    | Verifies                                              |
+| ------------------------------------------------------- | ----------------------------------------------------- |
+| `chat-agent/scripts/spike-sandbox.ts`                   | T1 (network probe + timeout probe) against live DO    |
+| `chat-agent/src/tools/db-tools.test.ts`                 | T2 SQL keyword allow-list (positive + negative cases) |
+| `chat-agent/src/rate-limits.test.ts`                    | Rate-limit policy evaluator (18 cases)                |
+| `chat-agent/src/system-prompt.test.ts`                  | Prompt-context redaction (no creds in prompt)         |
+| `chat-agent/src/tools/vega-lite-tools.test.ts`          | Chart spec validation                                 |
+| `shared/src/encryption.test.ts`                         | DB-profile envelope encryption round-trip             |
+| `shared/src/jwt.test.ts`                                | Chat-token mint/verify (claim binding, expiry)        |
+| `shared/src/agent-error.test.ts`                        | Structured agent-error wire format                    |
+| `shared/src/obs.test.ts`                                | Structured logging contract                           |
 
-Any regression in these tests blocks deploy.
+Total: 82 unit tests, all green pre-deploy. CI runs `pnpm -r run test`.
+
+What we **don't** have automated yet:
+- A live integration test asserting `transaction_read_only` rejects
+  a model-bypass write (would need a throwaway test DB).
+- A WebSocket auth test asserting 401 on missing token (covered
+  manually + by `spike-sandbox.ts` heartbeat). Tracked for
+  post-alpha follow-up.

@@ -22,6 +22,13 @@ export interface Env {
    * Defaults to `indent.com` if unset.
    */
   ALLOWED_EMAIL_DOMAINS?: string;
+  /**
+   * Comma-separated list of additional origins allowed for
+   * credentialed CORS requests beyond `APP_URL`. Localhost is
+   * always allowed (dev convenience). Closed-list to prevent
+   * cross-origin credential leakage (c87874 finding).
+   */
+  CORS_EXTRA_ORIGINS?: string;
 
   // Secrets
   CONTROL_PLANE_DB_URL: SecretBinding;

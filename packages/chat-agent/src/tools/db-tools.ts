@@ -389,10 +389,17 @@ export function dbTools(getCtx: () => Promise<DataDbContext>): ToolProvider {
     // structurally — `.unsafe()` accepts a SQL string + parameter array
     // and returns the row list. Casts are localized so we don't pollute
     // the public types.
+    // Defense-in-depth (subtask c87874): SECURITY.md T2 claims a
+    // `BEGIN READ ONLY` transaction. Earlier code only set
+    // statement_timeout — relying on the keyword allow-list to block
+    // mutations. We now also set `transaction_read_only = on` as a
+    // session GUC inside the transaction so even a regex bypass
+    // surfaces as a Postgres error rather than data corruption.
+    // `transaction_read_only` rejects DML at the protocol level.
     const result = (await sql.begin(async (tx) => {
-      await (tx as unknown as { unsafe: (s: string) => Promise<unknown> }).unsafe(
-        `SET LOCAL statement_timeout = '${STATEMENT_TIMEOUT_MS}ms'`
-      );
+      const u = (tx as unknown as { unsafe: (s: string) => Promise<unknown> }).unsafe;
+      await u(`SET LOCAL transaction_read_only = on`);
+      await u(`SET LOCAL statement_timeout = '${STATEMENT_TIMEOUT_MS}ms'`);
       return (
         tx as unknown as {
           unsafe: (s: string, p?: unknown[]) => Promise<unknown>;

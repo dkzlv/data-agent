@@ -267,7 +267,7 @@ The spike is the most important task. Save energy for it; do not skimp. After th
 - [x] 2f89ff Error UX
 - [x] 9fa055 Observability (stub)
 - [x] dc09a3 Internal alpha (stub)
-- [ ] c87874 Security review (self-audit)
+- [x] c87874 Security review (self-audit)
 
 ---
 
