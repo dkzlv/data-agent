@@ -1,4 +1,4 @@
-import { callable } from "agents";
+import { callable, type Connection, type ConnectionContext } from "agents";
 import { Think } from "@cloudflare/think";
 import { Workspace } from "@cloudflare/shell";
 import { stateTools } from "@cloudflare/shell/workers";
@@ -198,6 +198,57 @@ export class ChatAgent extends Think<Env> {
       executor,
     });
     return { codemode };
+  }
+
+  /**
+   * Multi-user presence: broadcast the set of connected users whenever
+   * someone joins or leaves. The custom message type
+   * `data_agent_presence` is consumed by the chat UI and rendered as a
+   * compact "who's here" header.
+   *
+   * Connection state is keyed by Connection.id (transient, per-WS).
+   * userId/tenantId are pulled from the headers stamped onto the
+   * upgrade request by `onBeforeConnect` in `index.ts`.
+   */
+  override async onConnect(connection: Connection, ctx: ConnectionContext): Promise<void> {
+    // Defer to Think's own onConnect first (it sends the message replay
+    // and other init traffic).
+    await super.onConnect(connection, ctx);
+
+    const userId = ctx.request.headers.get("x-data-agent-user-id") ?? "anonymous";
+    const tenantId = ctx.request.headers.get("x-data-agent-tenant-id") ?? "";
+    connection.setState({ userId, tenantId, joinedAt: Date.now() } as never);
+    this.broadcastPresence();
+  }
+
+  override async onClose(
+    connection: Connection,
+    code: number,
+    reason: string,
+    wasClean: boolean
+  ): Promise<void> {
+    await super.onClose(connection, code, reason, wasClean);
+    // Connection is already removed from `getConnections()` by the time
+    // onClose runs, so the broadcast naturally reflects the new state.
+    this.broadcastPresence();
+  }
+
+  private broadcastPresence(): void {
+    type PresenceState = { userId: string; tenantId?: string; joinedAt: number };
+    const seen = new Map<string, { userId: string; joinedAt: number }>();
+    for (const conn of this.getConnections<PresenceState>()) {
+      const state = conn.state;
+      if (!state) continue;
+      const existing = seen.get(state.userId);
+      if (!existing || existing.joinedAt > state.joinedAt) {
+        seen.set(state.userId, { userId: state.userId, joinedAt: state.joinedAt });
+      }
+    }
+    const message = JSON.stringify({
+      type: "data_agent_presence",
+      users: Array.from(seen.values()).sort((a, b) => a.joinedAt - b.joinedAt),
+    });
+    this.broadcast(message);
   }
 
   /**

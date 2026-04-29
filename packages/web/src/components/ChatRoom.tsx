@@ -13,7 +13,7 @@
  * multi-user typing indicators, and the artifact viewer (`a4e12f`).
  */
 import type { FormEvent } from "react";
-import { useCallback, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { UIMessage } from "ai";
 import { useAgent } from "agents/react";
 import { useAgentChat } from "@cloudflare/ai-chat/react";
@@ -50,11 +50,35 @@ export function ChatRoom({ chatId, title }: ChatRoomProps): React.ReactElement {
     credentials: "include",
   });
 
+  // Presence: the ChatAgent broadcasts `{ type: 'data_agent_presence',
+  // users: [{ userId, joinedAt }] }` whenever the connected set changes.
+  const [presence, setPresence] = useState<{ userId: string; joinedAt: number }[]>([]);
+  useEffect(() => {
+    const onMsg = (e: MessageEvent) => {
+      const raw = typeof e.data === "string" ? e.data : "";
+      if (!raw) return;
+      try {
+        const parsed = JSON.parse(raw) as {
+          type?: string;
+          users?: { userId: string; joinedAt: number }[];
+        };
+        if (parsed.type === "data_agent_presence" && Array.isArray(parsed.users)) {
+          setPresence(parsed.users);
+        }
+      } catch {
+        // not our message
+      }
+    };
+    agent.addEventListener("message", onMsg);
+    return () => agent.removeEventListener("message", onMsg);
+  }, [agent]);
+
   return (
     <div className="flex h-[calc(100dvh-7rem)] flex-col gap-4">
       {title ? (
-        <header className="border-b border-neutral-200 pb-3 dark:border-neutral-800">
+        <header className="flex items-center justify-between gap-3 border-b border-neutral-200 pb-3 dark:border-neutral-800">
           <h1 className="text-2xl font-semibold tracking-tight">{title}</h1>
+          <PresenceBadges users={presence} />
         </header>
       ) : null}
 
@@ -210,6 +234,40 @@ function safeJsonStringify(v: unknown): string {
   } catch {
     return String(v);
   }
+}
+
+function PresenceBadges({ users }: { users: { userId: string; joinedAt: number }[] }) {
+  if (users.length <= 1) return null;
+  // Render up to 4 colored circles with initials. We don't have user
+  // display names on the wire yet (only ids); use the first 2 chars
+  // of the id as a placeholder. dea3ff hooks in proper member lookup.
+  const visible = users.slice(0, 4);
+  const overflow = users.length - visible.length;
+  return (
+    <div className="flex items-center gap-1.5" title={`${users.length} active`}>
+      <div className="flex -space-x-1.5">
+        {visible.map((u) => (
+          <span
+            key={u.userId}
+            className="inline-flex h-6 w-6 items-center justify-center rounded-full border-2 border-neutral-50 bg-neutral-200 text-[9px] font-semibold uppercase text-neutral-700 ring-1 ring-neutral-300 dark:border-neutral-950 dark:bg-neutral-700 dark:text-neutral-100 dark:ring-neutral-600"
+            style={{ background: idToColor(u.userId) }}
+            title={u.userId}
+          >
+            {u.userId.slice(0, 2)}
+          </span>
+        ))}
+      </div>
+      {overflow > 0 && <span className="text-[10px] text-neutral-500">+{overflow}</span>}
+    </div>
+  );
+}
+
+function idToColor(id: string): string {
+  // Deterministic pleasant pastel from the id hash.
+  let h = 0;
+  for (let i = 0; i < id.length; i++) h = (h * 31 + id.charCodeAt(i)) >>> 0;
+  const hue = h % 360;
+  return `oklch(0.78 0.09 ${hue})`;
 }
 
 function Composer({

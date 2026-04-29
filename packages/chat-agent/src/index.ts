@@ -25,7 +25,16 @@ export { ChatAgent } from "./agent";
  * header (gateway path) OR `?token=` query param (browser <img src> path,
  * since browsers can't set headers on those).
  */
-async function authenticateChatRequest(req: Request, env: Env): Promise<Response | null> {
+/**
+ * Validate the chat token AND, on success, return a Request augmented
+ * with `x-data-agent-user-id` and `x-data-agent-tenant-id` headers
+ * that are visible to the DO's `onConnect` / `onRequest` handlers.
+ *
+ * Returning a mutated Request to the agents SDK's onBeforeConnect /
+ * onBeforeRequest is the supported way to forward auth-derived facts
+ * into the DO without re-validating the token there.
+ */
+async function authenticateChatRequest(req: Request, env: Env): Promise<Response | Request | null> {
   const url = new URL(req.url);
 
   let token = "";
@@ -39,7 +48,6 @@ async function authenticateChatRequest(req: Request, env: Env): Promise<Response
     return new Response("missing chat token", { status: 401 });
   }
 
-  // Pull chatId from /agents/<class-kebab>/<chatId>/...
   const parts = url.pathname.split("/").filter(Boolean);
   const chatId = parts[2] ? decodeURIComponent(parts[2]) : "";
   if (!chatId) {
@@ -48,8 +56,21 @@ async function authenticateChatRequest(req: Request, env: Env): Promise<Response
 
   try {
     const signingKey = await readSecret(env.INTERNAL_JWT_SIGNING_KEY);
-    await verifyChatToken(signingKey, token, { chatId });
-    return null;
+    const claims = await verifyChatToken(signingKey, token, { chatId });
+
+    // Forward auth-derived identity to the DO via headers on a cloned
+    // Request. We can't mutate the original Request's headers (immutable
+    // on inbound), so a fresh Request copy is required.
+    const headers = new Headers(req.headers);
+    headers.set("x-data-agent-user-id", claims.userId);
+    headers.set("x-data-agent-tenant-id", claims.tenantId);
+    return new Request(req.url, {
+      method: req.method,
+      headers,
+      body: req.body,
+      // Preserve WS upgrade specifics — Workers passes them on the
+      // Request automatically and Request constructor copies them.
+    });
   } catch (err) {
     console.warn("chat auth failed", { chatId, err: (err as Error).message });
     return new Response("invalid token", { status: 401 });
@@ -74,13 +95,17 @@ export default {
     // and inherit the WS upgrade authentication.
     const routed = await routeAgentRequest(request, env, {
       cors: true,
+      // Returning a Request from these hooks forwards the (potentially
+      // mutated) request into the DO. Returning a Response short-circuits
+      // with that response. Returning undefined / null lets the SDK
+      // forward the original request unchanged.
       onBeforeConnect: async (req) => {
-        const reject = await authenticateChatRequest(req, env);
-        return reject ?? undefined;
+        const result = await authenticateChatRequest(req, env);
+        return result ?? undefined;
       },
       onBeforeRequest: async (req) => {
-        const reject = await authenticateChatRequest(req, env);
-        return reject ?? undefined;
+        const result = await authenticateChatRequest(req, env);
+        return result ?? undefined;
       },
     });
     if (routed) return routed;
