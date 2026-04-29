@@ -1,0 +1,56 @@
+{
+  // Local-dev overlay for `wrangler dev`.
+  //
+  // The production wrangler.jsonc declares `secrets_store_secrets` bindings,
+  // which wrangler dev resolves against the real Cloudflare Secrets Store
+  // (account 2f7029a7…, store 5fca98fd…) — even locally. That's fine when
+  // those secrets are populated, but our `.dev.vars` carries different
+  // dev-only values for `BETTER_AUTH_SECRET` and `MASTER_ENCRYPTION_KEY`,
+  // and the cloud store doesn't have them. Wrangler picks the binding
+  // first and the request 500s with `Secret "X" not found`.
+  //
+  // This config is identical to wrangler.jsonc minus `secrets_store_secrets`
+  // and minus the production-only Routes / Send Email config that local
+  // dev doesn't need. With those bindings dropped, `.dev.vars` provides
+  // the secrets as plain strings (readSecret handles both shapes — see
+  // src/env.ts).
+  //
+  // Used by Procfile via `wrangler dev --config wrangler.dev.jsonc`.
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "data-agent-api-gateway",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-04-29",
+  "compatibility_flags": ["nodejs_compat"],
+  "account_id": "2f7029a7ef2671db090d9304f595c42d",
+
+  "observability": {
+    "enabled": true
+  },
+
+  "limits": {
+    "cpu_ms": 300000
+  },
+
+  "vars": {
+    // Local URLs — `.dev.vars` would also override these, but declaring
+    // them here keeps `wrangler dev` from warning about missing vars.
+    "APP_URL": "http://localhost:5173",
+    "API_URL": "http://localhost:8787",
+    "CF_ACCOUNT_ID": "2f7029a7ef2671db090d9304f595c42d",
+    "ALLOWED_EMAIL_DOMAINS": "indent.com"
+  },
+
+  "r2_buckets": [
+    {
+      "binding": "ARTIFACTS",
+      "bucket_name": "data-agent-artifacts"
+    }
+  ],
+
+  "services": [
+    {
+      "binding": "CHAT_AGENT",
+      "service": "data-agent-chat-agent"
+    }
+  ]
+}

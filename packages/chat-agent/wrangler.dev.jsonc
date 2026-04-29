@@ -1,0 +1,63 @@
+{
+  // Local-dev overlay for `wrangler dev`. See
+  // packages/api-gateway/wrangler.dev.jsonc for the rationale — short
+  // version: the prod config's `secrets_store_secrets` bindings hit the
+  // real Cloudflare Secrets Store even in local dev, and not all values
+  // are populated there. Dropping those bindings lets `.dev.vars` feed
+  // the secrets as plain strings (readSecret handles both shapes).
+  //
+  // Used by Procfile via `wrangler dev --config wrangler.dev.jsonc`.
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "data-agent-chat-agent",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-04-29",
+  "compatibility_flags": ["nodejs_compat"],
+  "account_id": "2f7029a7ef2671db090d9304f595c42d",
+
+  "observability": {
+    "enabled": true
+  },
+
+  "limits": {
+    "cpu_ms": 300000
+  },
+
+  "vars": {
+    "APP_URL": "http://localhost:5173",
+    "API_URL": "http://localhost:8787",
+    "AI_GATEWAY_ID": "data-agent"
+  },
+
+  "ai": {
+    "binding": "AI"
+  },
+
+  "worker_loaders": [
+    {
+      "binding": "LOADER"
+    }
+  ],
+
+  "r2_buckets": [
+    {
+      "binding": "ARTIFACTS",
+      "bucket_name": "data-agent-artifacts"
+    }
+  ],
+
+  "durable_objects": {
+    "bindings": [
+      {
+        "name": "CHAT_AGENT",
+        "class_name": "ChatAgent"
+      }
+    ]
+  },
+
+  "migrations": [
+    {
+      "tag": "v1",
+      "new_sqlite_classes": ["ChatAgent"]
+    }
+  ]
+}
