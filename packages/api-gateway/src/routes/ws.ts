@@ -18,7 +18,7 @@
 import { and, eq } from "drizzle-orm";
 import { Hono } from "hono";
 import { logEvent, mintChatToken, truncateMessage } from "@data-agent/shared";
-import { schema } from "@data-agent/db";
+import { schema, type Database } from "@data-agent/db";
 import { writeAudit } from "../audit";
 import { readSecret, type Env } from "../env";
 import { requireSession, type RequestSession } from "../session";
@@ -26,6 +26,32 @@ import { requireSession, type RequestSession } from "../session";
 type Vars = { session: RequestSession };
 
 export const wsRouter = new Hono<{ Bindings: Env; Variables: Vars }>();
+
+/**
+ * Membership gate shared by every chat-scoped route in this file. The
+ * join through `chat` enforces that the chat belongs to the current
+ * tenant — a leaked chatId from a different workspace cannot be used
+ * to mint a token here. Earlier each route inlined this query; the
+ * fourth copy (the `/get-messages` proxy) prompted a tiny extraction.
+ */
+async function isChatMember(
+  db: Database,
+  args: { chatId: string; userId: string; tenantId: string }
+): Promise<boolean> {
+  const [row] = await db
+    .select({ role: schema.chatMember.role })
+    .from(schema.chatMember)
+    .innerJoin(schema.chat, eq(schema.chat.id, schema.chatMember.chatId))
+    .where(
+      and(
+        eq(schema.chatMember.chatId, args.chatId),
+        eq(schema.chatMember.userId, args.userId),
+        eq(schema.chat.tenantId, args.tenantId)
+      )
+    )
+    .limit(1);
+  return !!row;
+}
 
 wsRouter.get("/chats/:id/ws", requireSession(), async (c) => {
   // The browser must be opening a WebSocket — reject plain GETs so we don't
@@ -39,20 +65,7 @@ wsRouter.get("/chats/:id/ws", requireSession(), async (c) => {
   const { user, tenantId, db } = c.var.session;
 
   // Membership check (also enforces tenant ownership of the chat).
-  const [member] = await db
-    .select({ role: schema.chatMember.role })
-    .from(schema.chatMember)
-    .innerJoin(schema.chat, eq(schema.chat.id, schema.chatMember.chatId))
-    .where(
-      and(
-        eq(schema.chatMember.chatId, chatId),
-        eq(schema.chatMember.userId, user.id),
-        eq(schema.chat.tenantId, tenantId)
-      )
-    )
-    .limit(1);
-
-  if (!member) {
+  if (!(await isChatMember(db, { chatId, userId: user.id, tenantId }))) {
     return c.json({ error: "forbidden" }, 403);
   }
 
@@ -142,6 +155,55 @@ wsRouter.get("/chats/:id/ws", requireSession(), async (c) => {
 });
 
 /**
+ * Initial messages proxy — `GET /api/chats/:id/ws/get-messages`.
+ *
+ * The `@cloudflare/ai-chat` React hook fetches this URL on mount —
+ * it builds it by swapping `wss://` → `https://` on the WS URL and
+ * appending `/get-messages`. Without this route the request 404s,
+ * the SDK logs a warning, falls back to `[]` initial messages, and
+ * the user sees an empty chat (history only re-appears once the
+ * server's `cf_agent_chat_messages` snapshot lands over the WS).
+ *
+ * Think serves the actual `/get-messages` HTTP handler itself
+ * inside the DO (think.js:1010-1015 returns `this.messages`); we
+ * just need a thin authenticated reverse-proxy in front of it,
+ * mirroring the WS upgrade route's auth model.
+ *
+ * Read-only — no audit row. Fires on every chat load and twice on
+ * any WS reconnect; auditing every call would balloon the audit_log.
+ */
+wsRouter.get("/chats/:id/ws/get-messages", requireSession(), async (c) => {
+  const chatId = c.req.param("id");
+  const { user, tenantId, db } = c.var.session;
+
+  if (!(await isChatMember(db, { chatId, userId: user.id, tenantId }))) {
+    return c.json({ error: "forbidden" }, 403);
+  }
+
+  const signingKey = await readSecret(c.env.INTERNAL_JWT_SIGNING_KEY);
+  const token = await mintChatToken(signingKey, {
+    userId: user.id,
+    chatId,
+    tenantId,
+  });
+
+  const orig = new URL(c.req.url);
+  const forwardUrl = new URL(
+    `/agents/chat-agent/${encodeURIComponent(chatId)}/get-messages${orig.search}`,
+    orig
+  );
+  const fwdHeaders = new Headers(c.req.raw.headers);
+  fwdHeaders.set("Authorization", `Bearer ${token}`);
+  fwdHeaders.delete("cookie");
+  const fwdReq = new Request(forwardUrl, {
+    method: "GET",
+    headers: fwdHeaders,
+    body: null,
+  });
+  return c.env.CHAT_AGENT.fetch(fwdReq);
+});
+
+/**
  * Artifact list — `GET /api/chats/:id/artifacts`.
  *
  * Returns the chat's artifact manifest (newest first). Used by the
@@ -151,19 +213,9 @@ wsRouter.get("/chats/:id/artifacts", requireSession(), async (c) => {
   const chatId = c.req.param("id");
   const { user, tenantId, db } = c.var.session;
 
-  const [member] = await db
-    .select({ role: schema.chatMember.role })
-    .from(schema.chatMember)
-    .innerJoin(schema.chat, eq(schema.chat.id, schema.chatMember.chatId))
-    .where(
-      and(
-        eq(schema.chatMember.chatId, chatId),
-        eq(schema.chatMember.userId, user.id),
-        eq(schema.chat.tenantId, tenantId)
-      )
-    )
-    .limit(1);
-  if (!member) return c.json({ error: "forbidden" }, 403);
+  if (!(await isChatMember(db, { chatId, userId: user.id, tenantId }))) {
+    return c.json({ error: "forbidden" }, 403);
+  }
 
   const signingKey = await readSecret(c.env.INTERNAL_JWT_SIGNING_KEY);
   const token = await mintChatToken(signingKey, { userId: user.id, chatId, tenantId });
@@ -194,19 +246,9 @@ wsRouter.get("/chats/:id/artifacts/:artifactId", requireSession(), async (c) => 
   const artifactId = c.req.param("artifactId");
   const { user, tenantId, db } = c.var.session;
 
-  const [member] = await db
-    .select({ role: schema.chatMember.role })
-    .from(schema.chatMember)
-    .innerJoin(schema.chat, eq(schema.chat.id, schema.chatMember.chatId))
-    .where(
-      and(
-        eq(schema.chatMember.chatId, chatId),
-        eq(schema.chatMember.userId, user.id),
-        eq(schema.chat.tenantId, tenantId)
-      )
-    )
-    .limit(1);
-  if (!member) return c.json({ error: "forbidden" }, 403);
+  if (!(await isChatMember(db, { chatId, userId: user.id, tenantId }))) {
+    return c.json({ error: "forbidden" }, 403);
+  }
 
   const signingKey = await readSecret(c.env.INTERNAL_JWT_SIGNING_KEY);
   const token = await mintChatToken(signingKey, { userId: user.id, chatId, tenantId });

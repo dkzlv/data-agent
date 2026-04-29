@@ -155,3 +155,65 @@ function scopeLabel(code: string): string {
   if (code.includes("tenant")) return "Workspace";
   return "Daily";
 }
+
+/**
+ * Decide whether to suppress a generic stream error banner because
+ * the assistant actually produced a usable answer.
+ *
+ * Background — chat 3a76a225 (task bf7ab7): every turn audited as
+ * `turn.complete status="completed"` server-side, the DO held full
+ * assistant content, but the user saw a "couldn't finish that turn"
+ * banner. Cause: a single `data.error: true` chunk over the WS
+ * (provider blip / mid-stream warning) trips
+ * `WebSocketChatTransport._createResumeStream` into terminating the
+ * client-side stream, parking `chat.status` in `"error"` even after
+ * the rest of the response has streamed in.
+ *
+ * Earlier this lived inline in ChatRoom and additionally gated on
+ * `chatStatus === "ready"`. Removed that gate: when an error chunk
+ * trips the transport, status stays at `"error"` indefinitely so the
+ * gate never fires even though the message store reflects a fully
+ * completed answer. Trusting the message-store shape is the safer
+ * heuristic — known-code errors (rate limit, sandbox timeout, SQL)
+ * are still preserved because we never suppress decoded ones.
+ *
+ * Pure function for unit testing — the React side just calls
+ * `chat.clearError()` when this returns true.
+ */
+export interface UsableContentPart {
+  type?: string;
+  text?: string;
+  state?: string;
+}
+
+export function shouldClearStaleError(args: {
+  /** The error currently held by `useChat`. */
+  error: { message?: string } | null | undefined;
+  /**
+   * Last assistant message in the chat, or null/undefined if the
+   * conversation is empty / the latest is from the user.
+   */
+  lastAssistant: { role?: string; parts?: readonly UsableContentPart[] } | null | undefined;
+}): boolean {
+  const { error, lastAssistant } = args;
+  if (!error) return false;
+
+  // Decoded (server-thrown) errors carry a wire envelope. Those are
+  // legitimate failures the user should see — never suppress.
+  if (error.message && decodeAgentError(error.message)) return false;
+
+  if (!lastAssistant || lastAssistant.role !== "assistant") return false;
+  const parts = lastAssistant.parts ?? [];
+  return parts.some((p) => {
+    if (p.type === "text" && typeof p.text === "string" && p.text.trim().length > 0) {
+      return true;
+    }
+    // A completed tool call counts — a turn that fetched data and
+    // emitted an artifact is a usable answer even without a wrap-up
+    // text part.
+    if (p.type?.startsWith("tool-") && p.state === "output-available") {
+      return true;
+    }
+    return false;
+  });
+}

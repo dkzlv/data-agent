@@ -305,6 +305,8 @@ in the dashboard. Stable event names (so saved queries don't break):
 | `chat.history_repair_failed` | chat-agent | the repair pass itself threw (best-effort, turn proceeds anyway) |
 | `chat.reasoning_stamp_failed` | chat-agent | failed to stamp measured reasoning elapsedMs onto the assistant message (UI label only; non-blocking) |
 | `chat.cancel_received` | chat-agent | observed a `cf_agent_chat_request_cancel` WS frame (stop button or programmatic `chat.stop()`); pairs with the next `chat.turn_complete status="aborted"` for the same `turnId` and disambiguates client-cancel vs server-internal abort |
+| `chat.snapshot_sent` | chat-agent | every WS connect, both branches (active-stream / not). Carries `messageCount`, `hasActiveStream`. Verifies the unconditional snapshot-on-connect override took effect — fix for the "history disappears on mid-stream refresh" bug from chat `3a76a225` (task `bf7ab7`). |
+| `chat.snapshot_send_failed` | chat-agent | snapshot-on-connect threw before super.onConnect ran; rare (would mean a connection was already in a bad state). Best-effort, never blocks the connect itself. |
 | `ws.upgrade` / `ws.upgrade_response` / `ws.upgrade_failed` | api-gateway | WS reverse-proxy boundary |
 
 Every chat-agent event carries a `turnId` (for in-turn events) or
@@ -680,6 +682,50 @@ project. Don't undo without reading the relevant context.
     page load. The api-gateway is still the authoritative gate —
     every data fetch re-validates the cookie server-side, so the
     cached client-side gate doesn't widen the auth surface.
+17. **Snapshot-on-connect always.** Think (0.4.2,
+    `think.js:983-989`) skips the `cf_agent_chat_messages` snapshot
+    on `onConnect` when a resumable stream is active — sending only
+    `cf_agent_stream_resuming`. That leaves a refreshing client
+    with no history to render the resumed chunks into; the user
+    sees an empty list with the streaming assistant message
+    growing while every prior turn is gone until completion. We
+    unconditionally send the snapshot first in `ChatAgent.onConnect`
+    before deferring to `super`. In the no-active-stream branch
+    this means the client gets the same snapshot twice — idempotent
+    `setMessages` call, zero behavioral cost. The `chat.snapshot_sent`
+    log event proves the override fired (filter
+    `hasActiveStream=true` to see the streaming-refresh path).
+    Source: chat `3a76a225` (task `bf7ab7`).
+18. **Generic stream-error banner suppression trusts the message
+    store, not `chat.status`.** When the WS transport raises
+    `data.error: true` mid-stream (provider blip, gateway hiccup),
+    `useChat`'s `chat.status` parks at `"error"` indefinitely even
+    after the rest of the response streams in and the server-side
+    audit reports `turn.complete status="completed"`. Earlier we
+    gated banner suppression on `chatStatus === "ready"` — that
+    gate never fired on the bug path so the user saw a permanent
+    "couldn't finish" banner over a complete answer. The current
+    rule (`shouldClearStaleError` in `web/src/lib/agent-error.ts`)
+    suppresses iff: (a) the error has no decoded envelope and (b)
+    the last assistant message has at least one usable part
+    (non-empty text, or a tool call in `output-available`).
+    Decoded errors (rate limit, sandbox timeout, SQL) are always
+    preserved. Repro: chat `3a76a225` (task `bf7ab7`).
+
+### Hooking new HTTP routes from the agents-SDK client surface
+
+`@cloudflare/ai-chat`'s `useAgentChat` independently fetches
+`/get-messages` against a URL it derives by swapping `wss://` →
+`https://` on the WS URL it already has — this is *separate* from
+the WS upgrade. New SDK-driven HTTP paths discovered against our
+basePath (`/api/chats/:id/ws`) need a thin proxy in
+`api-gateway/src/routes/ws.ts`: `requireSession()`, membership
+check via `isChatMember`, mint chat-token, forward to the
+`CHAT_AGENT` service binding. Don't audit (read-only, fires every
+load). Don't reroute the agents SDK to a different host — the
+swap-protocol trick is brittle but stable; fight it at the
+gateway layer. Currently in this category: `/get-messages` (Phase 1
+of `bf7ab7`).
 
 ## Anti-patterns to avoid
 

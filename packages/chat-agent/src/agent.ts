@@ -301,7 +301,68 @@ export class ChatAgent extends Think<Env> implements AgentHost {
   // --- WS / messaging ---------------------------------------------------
 
   override async onConnect(connection: Connection, ctx: ConnectionContext): Promise<void> {
-    // Defer to Think's onConnect first (it sends message replay + init).
+    // Always send a `cf_agent_chat_messages` snapshot first.
+    //
+    // Think (think.js:983-989, 0.4.2) wraps user `onConnect` and
+    // gates the snapshot send on `hasActiveStream()`: if a turn is
+    // mid-flight, it sends `cf_agent_stream_resuming` *instead of*
+    // a snapshot. That leaves a refreshing client with no history
+    // to render the resumed stream chunks into — the user sees an
+    // empty list with the streaming assistant message growing while
+    // every prior turn is gone until completion. Canonical repro:
+    // chat 3a76a225 (task bf7ab7).
+    //
+    // Sending the snapshot ourselves before deferring to super
+    // unconditionally fills that gap. In the no-active-stream
+    // branch Think's wrapper still sends its own snapshot, so the
+    // client gets the same payload twice — `useAgentChat` calls
+    // `setMessages(snapshot)` either way and the second call is a
+    // no-op (same content, same identity). Tested in the field;
+    // zero behavioral cost on the common path.
+    //
+    // We use the wire constant `cf_agent_chat_messages` (from
+    // `agents/chat`'s `CHAT_MESSAGE_TYPES.CHAT_MESSAGES`) — that's
+    // what Think serializes and what `@cloudflare/ai-chat`
+    // recognizes on the client.
+    let snapshotSent = false;
+    let snapshotMessageCount = 0;
+    let hasActiveStream = false;
+    try {
+      hasActiveStream = this._resumableStream?.hasActiveStream?.() ?? false;
+      const messages = this.getMessages?.() ?? [];
+      snapshotMessageCount = Array.isArray(messages) ? messages.length : 0;
+      connection.send(
+        JSON.stringify({
+          type: "cf_agent_chat_messages",
+          messages,
+        })
+      );
+      snapshotSent = true;
+    } catch (err) {
+      // Snapshot is best-effort. If the connection is already in a
+      // bad state, Think's own snapshot path (or the next reconnect)
+      // will recover. Don't fail the whole connect.
+      logEvent({
+        event: "chat.snapshot_send_failed",
+        level: "warn",
+        chatId: this.name,
+        error: truncateMessage(err),
+      });
+    }
+
+    if (snapshotSent) {
+      logEvent({
+        event: "chat.snapshot_sent",
+        level: "debug",
+        chatId: this.name,
+        messageCount: snapshotMessageCount,
+        hasActiveStream,
+      });
+    }
+
+    // Defer to Think's onConnect (it sends a snapshot OR the
+    // stream-resuming notification, then runs the user-overridable
+    // body — which is empty on the base class).
     await super.onConnect(connection, ctx);
     attachConnection(connection, ctx, {
       chatId: this.name,
