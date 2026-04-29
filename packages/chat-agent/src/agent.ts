@@ -7,6 +7,7 @@ import { createCodeTool } from "@cloudflare/codemode/ai";
 import type { LanguageModel, ToolSet } from "ai";
 import { createWorkersAI } from "workers-ai-provider";
 import { getDataDb, resetDataDb, type AgentLike, type CachedHandle } from "./data-db";
+import { artifactTools, chartTools } from "./tools/artifact-tools";
 import { dbTools } from "./tools/db-tools";
 import type { Env } from "./env";
 
@@ -109,10 +110,62 @@ export class ChatAgent extends Think<Env> {
     });
     const host = this._dataDbHost;
     const codemode = createCodeTool({
-      tools: [stateTools(this.workspace), dbTools(() => getDataDb(host))],
+      tools: [
+        stateTools(this.workspace),
+        dbTools(() => getDataDb(host)),
+        artifactTools(this),
+        chartTools(this),
+      ],
       executor,
     });
     return { codemode };
+  }
+
+  /**
+   * HTTP handler for non-WS requests routed by the agents SDK.
+   * Currently serves artifact bytes:
+   *   GET /artifacts/<id>      → 200 with Content-Type from manifest
+   *
+   * Authentication is enforced by the api-gateway (which is the only path
+   * to this DO in production) and additionally by the WS-token scheme on
+   * the worker, but we re-validate the token here as defense in depth.
+   */
+  override async onRequest(request: Request): Promise<Response> {
+    const url = new URL(request.url);
+    // Path looks like /agents/chat-agent/<chatId>/artifacts/<id> after the
+    // SDK has dispatched to us. We strip everything up to the chat name.
+    const parts = url.pathname.split("/").filter(Boolean);
+    // parts: ["agents", "chat-agent", <chatId>, "artifacts", <id>]
+    if (parts[3] === "artifacts" && parts[4]) {
+      return this.serveArtifact(parts[4]);
+    }
+    return new Response("not found", { status: 404 });
+  }
+
+  private async serveArtifact(artifactId: string): Promise<Response> {
+    try {
+      const manifestText = await this.workspace.readFile("/artifacts/_manifest.json");
+      if (!manifestText) return new Response("not found", { status: 404 });
+      const manifest = JSON.parse(manifestText) as {
+        artifacts?: { id: string; mime?: string; name?: string }[];
+      };
+      const ref = manifest.artifacts?.find((a) => a.id === artifactId);
+      if (!ref) return new Response("not found", { status: 404 });
+      const body = await this.workspace.readFile(`/artifacts/${ref.id}`);
+      if (body == null) return new Response("not found", { status: 404 });
+      return new Response(body, {
+        status: 200,
+        headers: {
+          "content-type": ref.mime ?? "application/octet-stream",
+          "cache-control": "private, max-age=86400, immutable",
+          "x-artifact-id": ref.id,
+          ...(ref.name ? { "x-artifact-name": ref.name } : {}),
+        },
+      });
+    } catch (err) {
+      console.warn("serveArtifact failed", { artifactId, err: (err as Error).message });
+      return new Response("not found", { status: 404 });
+    }
   }
 
   /** Simple RPC method for service-binding smoke tests. */
@@ -163,6 +216,57 @@ export class ChatAgent extends Think<Env> {
   async dataDbReset(): Promise<{ ok: true }> {
     await resetDataDb(this._dataDbHost);
     return { ok: true };
+  }
+
+  /**
+   * RPC for spike harnesses: drive the chart + artifact toolproviders
+   * directly to verify wiring without an LLM in the loop. Creates a small
+   * bar chart + a markdown artifact, returns the manifest entries.
+   */
+  @callable()
+  async artifactToolsSmoke(): Promise<{
+    chart: { id: string; url: string; chartType?: string };
+    file: { id: string; url: string; name: string };
+    list: { count: number; first?: { name: string; kind: string } };
+  }> {
+    const chartProv = chartTools(this);
+    const artifactProv = artifactTools(this);
+    const chartFns = chartProv.tools as Record<
+      string,
+      { execute: (...args: unknown[]) => Promise<unknown> }
+    >;
+    const artifactFns = artifactProv.tools as Record<
+      string,
+      { execute: (...args: unknown[]) => Promise<unknown> }
+    >;
+
+    const chart = (await chartFns.bar!.execute({
+      data: [
+        { country: "USA", revenue: 1200 },
+        { country: "UK", revenue: 700 },
+        { country: "DE", revenue: 540 },
+      ],
+      x: "country",
+      y: "revenue",
+      title: "Revenue by country",
+    })) as { id: string; url: string; chartType?: string };
+
+    const file = (await artifactFns.save!.execute(
+      "summary.md",
+      "# Hello\n\nThis is a *test* artifact.",
+      "text/markdown"
+    )) as { id: string; url: string; name: string };
+
+    const list = (await artifactFns.list!.execute()) as {
+      name: string;
+      kind: string;
+    }[];
+
+    return {
+      chart: { id: chart.id, url: chart.url, chartType: chart.chartType },
+      file: { id: file.id, url: file.url, name: file.name },
+      list: { count: list.length, first: list[0] },
+    };
   }
 
   /**

@@ -19,12 +19,15 @@ export { ChatAgent } from "./agent";
  * not trigger `onBeforeConnect` for non-WebSocket entrypoints. Once the
  * gateway is the only entry path we'll tighten this further.
  */
-async function authenticateWsUpgrade(req: Request, env: Env): Promise<Response | null> {
+/**
+ * Validate the per-request chat token. Used both for WS upgrades and for
+ * HTTP fetches (artifact serving). The token can come via Authorization
+ * header (gateway path) OR `?token=` query param (browser <img src> path,
+ * since browsers can't set headers on those).
+ */
+async function authenticateChatRequest(req: Request, env: Env): Promise<Response | null> {
   const url = new URL(req.url);
 
-  // Browsers can't set headers on `new WebSocket(...)`, so we accept the
-  // token via the `?token=` query param as well as the Authorization
-  // header. The api-gateway always uses the header path.
   let token = "";
   const auth = req.headers.get("authorization");
   if (auth?.startsWith("Bearer ")) {
@@ -36,10 +39,8 @@ async function authenticateWsUpgrade(req: Request, env: Env): Promise<Response |
     return new Response("missing chat token", { status: 401 });
   }
 
-  // Pull chatId from the URL: /agents/ChatAgent/<chatId>
-  // (The `agents` SDK lowercases class names — class "ChatAgent" → "chat-agent".)
+  // Pull chatId from /agents/<class-kebab>/<chatId>/...
   const parts = url.pathname.split("/").filter(Boolean);
-  // parts[0]="agents", parts[1]=<class kebab>, parts[2]=<chatId>
   const chatId = parts[2] ? decodeURIComponent(parts[2]) : "";
   if (!chatId) {
     return new Response("missing chatId in path", { status: 400 });
@@ -50,7 +51,7 @@ async function authenticateWsUpgrade(req: Request, env: Env): Promise<Response |
     await verifyChatToken(signingKey, token, { chatId });
     return null;
   } catch (err) {
-    console.warn("ws auth failed", { chatId, err: (err as Error).message });
+    console.warn("chat auth failed", { chatId, err: (err as Error).message });
     return new Response("invalid token", { status: 401 });
   }
 }
@@ -67,13 +68,18 @@ export default {
       });
     }
 
-    // Route agent WS / HTTP requests by name.
-    // `onBeforeConnect` runs only for WS upgrades — HTTP RPC calls are not
-    // gated here (they have their own per-method `@callable()` policy).
+    // Route agent WS / HTTP requests by name. We validate the chat token
+    // on BOTH WS upgrades (onBeforeConnect) and arbitrary HTTP requests
+    // (onBeforeRequest). RPC `@callable()` calls go through the WS path
+    // and inherit the WS upgrade authentication.
     const routed = await routeAgentRequest(request, env, {
       cors: true,
       onBeforeConnect: async (req) => {
-        const reject = await authenticateWsUpgrade(req, env);
+        const reject = await authenticateChatRequest(req, env);
+        return reject ?? undefined;
+      },
+      onBeforeRequest: async (req) => {
+        const reject = await authenticateChatRequest(req, env);
         return reject ?? undefined;
       },
     });
