@@ -13,7 +13,8 @@
   "vars": {
     "APP_URL": "https://app.data-agent.dkzlv.com",
     "API_URL": "https://api.data-agent.dkzlv.com",
-    "COOKIE_DOMAIN": ".dkzlv.com"
+    "COOKIE_DOMAIN": ".dkzlv.com",
+    "CF_ACCOUNT_ID": "2f7029a7ef2671db090d9304f595c42d"
   },
 
   "secrets_store_secrets": [

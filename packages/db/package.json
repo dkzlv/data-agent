@@ -19,6 +19,7 @@
   },
   "dependencies": {
     "@data-agent/shared": "workspace:*",
+    "better-auth": "^1.6.9",
     "drizzle-orm": "^0.45.2",
     "postgres": "^3.4.9"
   },

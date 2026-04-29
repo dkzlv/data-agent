@@ -13,12 +13,14 @@ export interface Env {
   APP_URL: string;
   API_URL: string;
   COOKIE_DOMAIN: string;
+  CF_ACCOUNT_ID: string;
 
   // Secrets
   CONTROL_PLANE_DB_URL: SecretBinding;
   BETTER_AUTH_SECRET: SecretBinding;
   INTERNAL_JWT_SIGNING_KEY: SecretBinding;
   MASTER_ENCRYPTION_KEY: SecretBinding;
+  CF_API_TOKEN?: SecretBinding;
 
   // R2
   ARTIFACTS: R2Bucket;

@@ -13,6 +13,7 @@
   "dependencies": {
     "@data-agent/db": "workspace:*",
     "@data-agent/shared": "workspace:*",
+    "better-auth": "^1.6.9",
     "hono": "^4.12.15"
   },
   "devDependencies": {

@@ -1,11 +1,12 @@
 import { Hono } from "hono";
 import { cors } from "hono/cors";
 import { logger } from "hono/logger";
+import { createAuth } from "./auth";
 import type { Env } from "./env";
 
 type Bindings = Env;
 type Variables = {
-  // Populated by middleware in later subtasks (auth session, etc.)
+  // populated in later subtasks
 };
 
 const app = new Hono<{ Bindings: Bindings; Variables: Variables }>();
@@ -30,6 +31,12 @@ app.get("/healthz", (c) =>
     time: new Date().toISOString(),
   })
 );
+
+// Better Auth handler — handles /api/auth/sign-in/magic-link, /api/auth/get-session, etc.
+app.on(["GET", "POST"], "/api/auth/*", async (c) => {
+  const auth = await createAuth(c.env, c.executionCtx);
+  return auth.handler(c.req.raw);
+});
 
 // API surface — handlers land in later subtasks.
 const api = new Hono<{ Bindings: Bindings; Variables: Variables }>();
