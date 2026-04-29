@@ -6,6 +6,7 @@ import { DynamicWorkerExecutor } from "@cloudflare/codemode";
 import { createCodeTool } from "@cloudflare/codemode/ai";
 import type { LanguageModel, ToolSet } from "ai";
 import { createWorkersAI } from "workers-ai-provider";
+import { createOpenAI } from "@ai-sdk/openai";
 import { hashSql, logEvent, safePayload, truncateMessage } from "@data-agent/shared";
 import { auditFromAgent } from "./audit";
 import { checkRateLimits, RateLimitError } from "./rate-limits";
@@ -20,19 +21,23 @@ import { repairDanglingToolParts } from "./repair-history";
 import { readSecret, type Env } from "./env";
 
 /**
- * Default model — Kimi K2.6 on Workers AI. 1T params, 262k context,
- * function calling + reasoning. Pricing: $0.95/M in, $4/M out.
+ * Default model — Anthropic Claude Opus 4.7, routed through CF AI
+ * Gateway's OpenAI-compatible endpoint in BYOK mode. The gateway
+ * holds the Anthropic API key in its stored-keys vault and injects
+ * it on every relayed request; we never see it. The compat endpoint
+ * gives us a single OpenAI-shaped surface for all providers, so
+ * swapping models (or providers) is a config change, not a code one.
  *
- * Set `CHAT_MODEL` in vars to override (e.g. for A/B). Recognized values:
- *  - `@cf/moonshotai/kimi-k2.6` (default)
- *  - `@cf/zai-org/glm-4.7-flash` (faster, cheaper, smaller context)
- *  - `@cf/openai/gpt-oss-120b`  (reasoning-capable, ~120B)
+ * Model id format on the compat endpoint is `{provider}/{model}`:
+ *  - `anthropic/claude-opus-4-7`, `anthropic/claude-sonnet-4-5`
+ *  - `openai/gpt-5.2`, `openai/gpt-4.1-mini`
+ *  - `workers-ai/@cf/moonshotai/kimi-k2.6` (still routable through compat)
  *
- * `reasoning_effort` is forwarded to the Workers AI binding as a
- * passthrough; it has no effect on models that don't support reasoning.
+ * Set `CHAT_MODEL` in vars to override. The Workers AI binding path
+ * (`@cf/...`) is preserved for the title-summarizer which doesn't
+ * justify Claude Opus pricing.
  */
-const DEFAULT_MODEL = "@cf/moonshotai/kimi-k2.6";
-const DEFAULT_REASONING_EFFORT: "low" | "medium" | "high" = "medium";
+const DEFAULT_MODEL = "anthropic/claude-opus-4-7";
 
 /**
  * ChatAgent — extends `Think`, the AI-chat-aware Agent base.
@@ -129,6 +134,36 @@ export class ChatAgent extends Think<Env> {
   });
 
   /**
+   * Resolve the AI Gateway bearer eagerly at DO construction. This is
+   * the only secret `getModel()` needs, and `getModel()` is sync and
+   * runs *before* `beforeTurn` (Think framework calls it on line ~418
+   * of think.js while beforeTurn fires on line ~427) — so warming the
+   * cache later won't help.
+   *
+   * `ctx.blockConcurrencyWhile` blocks all incoming requests/RPCs to
+   * this DO instance until the resolution finishes, which is the
+   * canonical pattern for one-shot async setup. Resolution is
+   * typically <50ms (Secrets Store value fetch).
+   */
+  constructor(ctx: DurableObjectState, env: Env) {
+    super(ctx, env);
+    ctx.blockConcurrencyWhile(async () => {
+      if (env.CF_AIG_TOKEN) {
+        try {
+          this._resolvedAigToken = await readSecret(env.CF_AIG_TOKEN);
+        } catch (err) {
+          logEvent({
+            event: "chat.aig_token_resolve_failed",
+            level: "warn",
+            chatId: this.name,
+            error: truncateMessage(err),
+          });
+        }
+      }
+    });
+  }
+
+  /**
    * Lazy data-plane Postgres connection — populated by `getDataDb()` on
    * first use, persists for the lifetime of the DO instance. See `data-db.ts`.
    * Marked public so `data-db.ts` can read/write it through the agent
@@ -159,53 +194,87 @@ export class ChatAgent extends Think<Env> {
   }
 
   override getModel(): LanguageModel {
-    const modelId = (this.env.CHAT_MODEL ?? DEFAULT_MODEL) as
-      | "@cf/moonshotai/kimi-k2.6"
-      | "@cf/zai-org/glm-4.7-flash"
-      | "@cf/openai/gpt-oss-120b";
+    const modelId = this.env.CHAT_MODEL ?? DEFAULT_MODEL;
     // Stamp for the audit row built later (see onChatResponse).
     this._modelId = modelId;
 
-    const workersai = createWorkersAI({ binding: this.env.AI });
-
-    // CF AI Gateway (5bcb5f) — when `AI_GATEWAY_ID` is set, every
-    // inference call is proxied through the named gateway. The
-    // gateway dashboard provides cost tracking, request logs,
-    // caching, and replay; in return we attach metadata so the
-    // dashboard can slice usage per tenant/chat/user. Skipped in
-    // local dev where the binding may not have gateway access yet.
-    const gatewayId = this.env.AI_GATEWAY_ID;
     const ctx = this._cachedChatContext;
-    const gateway = gatewayId
-      ? {
-          id: gatewayId,
-          metadata: {
-            tenantId: ctx?.tenantId ?? "unknown",
-            chatId: this.name,
-            userId: this._currentTurnUserId ?? "unknown",
-            model: modelId,
-          },
-          // No client-side cache. SQL-introspection prompts include
-          // tenant-specific schema hashes which already de-dupe
-          // identical workloads at the *prompt* level; CF's content
-          // hash takes care of the rest. We could opt-in
-          // `cacheTtl: 600` later if cost dictates, but caching
-          // analytical answers is risky (data drifts).
-        }
-      : undefined;
+    const gatewayId = this.env.AI_GATEWAY_ID;
 
-    // sessionAffinity uses the DO id (globally unique, stable for the
-    // lifetime of this chat) so all turns from this chat hit the same
-    // replica — improves Workers AI KV-prefix-cache hit rate.
-    return workersai(modelId, {
-      sessionAffinity: this.sessionAffinity,
-      reasoning_effort: DEFAULT_REASONING_EFFORT,
-      chat_template_kwargs: {
-        enable_thinking: true,
-        clear_thinking: false,
-      },
-      ...(gateway ? { gateway } : {}),
+    // Workers AI ids are namespaced with `@cf/`. Everything else
+    // routes to Anthropic via the AI Gateway BYOK path. If we add a
+    // third provider later, switch to an explicit `provider:` prefix
+    // — for now this keeps the surface tiny.
+    if (modelId.startsWith("@cf/")) {
+      const workersai = createWorkersAI({ binding: this.env.AI });
+      const gateway = gatewayId
+        ? {
+            id: gatewayId,
+            metadata: {
+              tenantId: ctx?.tenantId ?? "unknown",
+              chatId: this.name,
+              userId: this._currentTurnUserId ?? "unknown",
+              model: modelId,
+            },
+          }
+        : undefined;
+      return workersai(modelId, {
+        sessionAffinity: this.sessionAffinity,
+        chat_template_kwargs: {
+          enable_thinking: true,
+          clear_thinking: false,
+        },
+        ...(gateway ? { gateway } : {}),
+      });
+    }
+
+    // External provider via CF AI Gateway's OpenAI-compatible endpoint
+    // (`/compat/chat/completions`). This gives us:
+    //   - Single auth header (`Authorization: Bearer <CF_AIG_TOKEN>`)
+    //     instead of provider-specific headers + cf-aig-authorization.
+    //   - One client surface for all providers — switching from
+    //     `anthropic/...` to `openai/...` is a CHAT_MODEL var change,
+    //     no code edits.
+    //   - Stored Keys (BYOK) is applied transparently by the gateway:
+    //     it injects the provider's real API key from its vault before
+    //     relaying. Our request never carries the Anthropic key.
+    //
+    // Per-request metadata still goes via `cf-aig-metadata` header so
+    // gateway-log slicing by tenant/chat/user matches what the
+    // Workers AI binding path produces.
+    const accountId = this.env.CF_ACCOUNT_ID;
+    const baseURL =
+      gatewayId && accountId
+        ? `https://gateway.ai.cloudflare.com/v1/${accountId}/${gatewayId}/compat`
+        : undefined;
+
+    const headers: Record<string, string> = {};
+    if (gatewayId) {
+      headers["cf-aig-metadata"] = JSON.stringify({
+        tenantId: ctx?.tenantId ?? "unknown",
+        chatId: this.name,
+        userId: this._currentTurnUserId ?? "unknown",
+        model: modelId,
+      });
+    }
+
+    // CF_AIG_TOKEN is REQUIRED in production (gateway is authenticated).
+    // In local dev without the secret bound we fall through to whatever
+    // is in apiKey — a noisy 401 is fine, it's an explicit signal to
+    // populate `.dev.vars`.
+    const apiKey = this._resolvedAigToken ?? "missing-cf-aig-token";
+
+    const openai = createOpenAI({
+      apiKey,
+      ...(baseURL ? { baseURL } : {}),
+      ...(Object.keys(headers).length ? { headers } : {}),
     });
+
+    // `openai.chat(...)` selects the chat-completions surface, which
+    // is what the AI Gateway compat endpoint speaks. `openai(...)` /
+    // `openai.responses(...)` would target the Responses API which
+    // the gateway doesn't proxy.
+    return openai.chat(modelId);
   }
 
   override getSystemPrompt(): string {
@@ -815,6 +884,21 @@ export class ChatAgent extends Think<Env> {
    * relative to the most recent inference.
    */
   private _modelId: string = DEFAULT_MODEL;
+
+  /**
+   * Resolved CF AI Gateway bearer for this DO instance. Used as the
+   * compat endpoint's `Authorization: Bearer ...` header (the gateway
+   * accepts that as an alias for `cf-aig-authorization`).
+   *
+   * Populated by `beforeTurn` so the *sync* `getModel()` doesn't need
+   * to await secret resolution. Stays in memory for the DO lifetime —
+   * no disk persistence, evicted on hibernation.
+   *
+   * Null means either: not yet resolved (first turn pre-beforeTurn),
+   * or the binding is unset in local dev — the model call will 401
+   * loudly, which is the right signal.
+   */
+  private _resolvedAigToken: string | null = null;
 
   /** Wall-clock start of the current turn (9fa055). */
   private _turnStartedAt: number = 0;

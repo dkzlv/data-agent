@@ -33,7 +33,10 @@
     "APP_URL": "https://data-agent.dkzlv.com",
     "API_URL": "https://data-agent.dkzlv.com",
     // Route Workers AI through CF AI Gateway for cost/log/cache (5bcb5f).
-    "AI_GATEWAY_ID": "data-agent"
+    "AI_GATEWAY_ID": "data-agent",
+    // Used to construct the gateway base URL for external providers
+    // (Anthropic BYOK). Mirrors `account_id` above.
+    "CF_ACCOUNT_ID": "2f7029a7ef2671db090d9304f595c42d"
   },
 
   "ai": {
@@ -68,6 +71,14 @@
       "binding": "MASTER_ENCRYPTION_KEY",
       "store_id": "5fca98fdba4f4972b9d14ac74ea58cf4",
       "secret_name": "MASTER_ENCRYPTION_KEY"
+    },
+    {
+      // CF API token w/ AI Gateway → Run permission. Used as the
+      // `cf-aig-authorization` bearer when calling external providers
+      // (Anthropic) through the gateway in authenticated mode.
+      "binding": "CF_AIG_TOKEN",
+      "store_id": "5fca98fdba4f4972b9d14ac74ea58cf4",
+      "secret_name": "CF_AIG_TOKEN"
     }
   ],
 

@@ -60,6 +60,9 @@ importers:
 
   packages/chat-agent:
     dependencies:
+      '@ai-sdk/openai':
+        specifier: ^3.0.54
+        version: 3.0.54(zod@4.3.6)
       '@cloudflare/ai-chat':
         specifier: ^0.5.4
         version: 0.5.4(@ai-sdk/react@3.0.171(react@19.2.5)(zod@4.3.6))(agents@0.11.9)(ai@6.0.169(zod@4.3.6))(react@19.2.5)(zod@4.3.6)
@@ -300,6 +303,12 @@ packages:
 
   '@ai-sdk/gateway@3.0.105':
     resolution: {integrity: sha512-XpERadvLMHkYGJO4hz1Sw7Y9J705Iex48TmdZLdZdaPiFFtVgiA9qhXugLUWGAxdlXU/2N6ipoPSOwfnULZbXw==}
+    engines: {node: '>=18'}
+    peerDependencies:
+      zod: ^3.25.76 || ^4.1.8
+
+  '@ai-sdk/openai@3.0.54':
+    resolution: {integrity: sha512-j1qrNe/ebUKuE+fETzS+CVnczs11jQBR9y9M6aoKtJZAosg6SZnPC1Bb92e2u6yaSK+88TZoFhiY67uYphPitw==}
     engines: {node: '>=18'}
     peerDependencies:
       zod: ^3.25.76 || ^4.1.8
@@ -5202,6 +5211,12 @@ snapshots:
       '@ai-sdk/provider': 3.0.9
       '@ai-sdk/provider-utils': 4.0.24(zod@4.3.6)
       '@vercel/oidc': 3.2.0
+      zod: 4.3.6
+
+  '@ai-sdk/openai@3.0.54(zod@4.3.6)':
+    dependencies:
+      '@ai-sdk/provider': 3.0.9
+      '@ai-sdk/provider-utils': 4.0.24(zod@4.3.6)
       zod: 4.3.6
 
   '@ai-sdk/provider-utils@4.0.24(zod@4.3.6)':

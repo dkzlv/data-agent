@@ -56,8 +56,9 @@ freshly added export. Source of past confusion.
 | Layer | Choice | Why |
 |--|--|--|
 | Runtime | Cloudflare Workers + DOs | Single-platform, scales to zero, isolates |
-| LLM | Workers AI `@cf/moonshotai/kimi-k2.6` | Free credits, good tool calling, fits in CF |
-| AI Gateway | `data-agent` (id) | Cost/log/cache, replaces hand-rolled telemetry |
+| LLM | Anthropic `claude-opus-4-7` via AI Gateway BYOK | Best-in-class tool calling + reasoning; gateway holds the API key |
+| Title summarizer LLM | Workers AI `@cf/meta/llama-3.1-8b-instruct` | Cheap, deterministic, decoupled from chat-model swaps |
+| AI Gateway | `data-agent` (authenticated, BYOK) | Cost/log/cache + injects Anthropic key from stored-keys vault |
 | Agent framework | `@cloudflare/think` 0.4.x | Chat lifecycle, FIFO turn lock, recovery |
 | Sandbox | `@cloudflare/codemode` + `@cloudflare/shell` + Worker Loader | Untrusted TS isolation |
 | AI SDK | Vercel `ai` v6 | Streaming + tool schemas |
@@ -104,7 +105,7 @@ flag enabled for Buffer / TLS work.
 │  ChatAgent : Think   │
 │  - persists messages │
 │  - presence + queue  │
-│  - calls Workers AI  │
+│  - calls Anthropic   │  via CF AI Gateway BYOK
 │  - codemode sandbox  │
 │    └─ db.* tools ────┼──→ user's Postgres (read-only)
 │    └─ chart.* + R2   │
@@ -447,9 +448,10 @@ history. New turns work fine.
 When a turn behaves weirdly (model emits text instead of calling a
 tool, hallucinates a column, ignores instructions), the audit
 timeline + Workers Logs only tell us *what we did with* the
-response — not what we sent to Workers AI or what the model
-actually streamed back. The CF AI Gateway log API is the source of
-truth for both.
+response — not what we sent to the model provider or what the
+model actually streamed back. The CF AI Gateway log API is the
+source of truth for both, and now sees both Anthropic (chat) and
+Workers AI (title summarizer) traffic on the same gateway.
 
 **Token.** You need a Cloudflare API token with `Account → AI
 Gateway → Read` scoped to the production CF account. Create at
@@ -469,8 +471,8 @@ GET https://api.cloudflare.com/client/v4/accounts/{ACCOUNT}/ai-gateway/gateways/
 # Original request payload (system prompt + messages + tools schema as sent)
 GET .../logs/{logId}/request
 
-# Streamed response (113 SSE chunks for a typical Kimi turn — accumulate
-# delta.content / delta.reasoning_content / delta.tool_calls to reconstruct)
+# Streamed response (Anthropic SSE: content_block_start / _delta / _stop
+# events; for chat-completion compat use streamed_data[].choices[0].delta.*)
 GET .../logs/{logId}/response
 ```
 
@@ -619,9 +621,11 @@ project. Don't undo without reading the relevant context.
     so every new tenant has something to chat with immediately.
 13. **Magic-link allow-list is silent.** No enumeration. Default
     `indent.com`; configurable via `ALLOWED_EMAIL_DOMAINS`.
-14. **Stop-when-answered prompt nudge.** Kimi K2.6 likes to keep
-    iterating; prompt explicitly says "after an artifact saves,
-    write the final reply immediately."
+14. **Stop-when-answered prompt nudge.** Originally added because
+    Kimi K2.6 liked to keep iterating after an artifact saved.
+    Kept on Claude Opus 4.7 — the nudge is harmless and sometimes
+    still needed when the model decides to "explain its work"
+    instead of calling it done.
 15. **Inline `waitUntil` for title summarization** (subtask 16656a).
     Auto-titling fires from `beforeTurn` on the first user message
     via `ctx.waitUntil(summarizeAndPersistTitle(...))` — same pattern
