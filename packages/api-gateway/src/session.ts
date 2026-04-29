@@ -1,6 +1,7 @@
 import { and, eq } from "drizzle-orm";
 import type { Context, MiddlewareHandler } from "hono";
 import { createDbClient, schema, type Database } from "@data-agent/db";
+import { encryptCredentials } from "@data-agent/shared";
 import { createAuth } from "./auth";
 import { readSecret, type Env } from "./env";
 
@@ -42,7 +43,7 @@ export function requireSession(): MiddlewareHandler<{ Bindings: Env; Variables: 
     const { db, client } = createDbClient({ url: dbUrl });
     c.executionCtx.waitUntil(client.end({ timeout: 1 }).catch(() => {}));
 
-    const tenantId = await ensurePersonalTenant(db, {
+    const tenantId = await ensurePersonalTenant(c.env, db, {
       id: sessionResult.user.id,
       email: sessionResult.user.email,
       name: sessionResult.user.name ?? sessionResult.user.email,
@@ -61,7 +62,7 @@ export function requireSession(): MiddlewareHandler<{ Bindings: Env; Variables: 
   };
 }
 
-async function ensurePersonalTenant(db: Database, user: SessionUser): Promise<string> {
+async function ensurePersonalTenant(env: Env, db: Database, user: SessionUser): Promise<string> {
   // Existing membership?
   const existing = await db
     .select({ tenantId: schema.tenantMember.tenantId })
@@ -87,7 +88,86 @@ async function ensurePersonalTenant(db: Database, user: SessionUser): Promise<st
     role: "owner",
   });
 
+  // Seed a default sample db_profile so brand-new users land in a
+  // ready-to-query state (subtask: starter dataset). Best-effort —
+  // signup must never fail because we couldn't seed a fixture, so
+  // wrap in try/catch and log on failure. Idempotent in practice
+  // because we only run it on first-time tenant creation.
+  await seedSampleDbProfile(env, db, tenant.id, user.id).catch((err) => {
+    console.error("[seed] failed to provision sample db_profile", {
+      tenantId: tenant.id,
+      err: (err as Error).message,
+    });
+  });
+
   return tenant.id;
+}
+
+/**
+ * Provision a read-only `db_profile` pointing at the shared "Neon
+ * employees database" sample dataset for every new tenant. Same row
+ * shape as `POST /api/db-profiles` would produce — name, host, port,
+ * sslmode, encrypted user/password — so the frontend renders it
+ * exactly like a user-added profile.
+ *
+ * The credentials live behind a `data_agent_ro` Postgres role with
+ * `SELECT`-only privileges on the `employees` schema. Even if our
+ * sandbox safety nets fail open, the database itself rejects writes.
+ *
+ * Connection details are deliberately hard-coded (not env vars) —
+ * this is a literal, named "starter dataset" the product ships with,
+ * not a tenant-configurable secret. Rotating the password requires a
+ * code change and re-deploy.
+ */
+async function seedSampleDbProfile(
+  env: Env,
+  db: Database,
+  tenantId: string,
+  userId: string
+): Promise<void> {
+  const id = crypto.randomUUID();
+  const SAMPLE = {
+    name: "Sample: Neon employees DB",
+    host: "ep-frosty-thunder-anxk37z3-pooler.c-6.us-east-1.aws.neon.tech",
+    port: 5432,
+    database: "neondb",
+    sslmode: "require" as const,
+    user: "data_agent_ro",
+    password: "agentReadOnly_2026!",
+  };
+
+  const masterKey = await readSecret(env.MASTER_ENCRYPTION_KEY);
+  const enc = await encryptCredentials(
+    masterKey,
+    { user: SAMPLE.user, password: SAMPLE.password },
+    { tenantId, dbProfileId: id }
+  );
+
+  await db.insert(schema.dbProfile).values({
+    id,
+    tenantId,
+    name: SAMPLE.name,
+    createdBy: userId,
+    kind: "postgres",
+    host: SAMPLE.host,
+    port: SAMPLE.port,
+    database: SAMPLE.database,
+    sslmode: SAMPLE.sslmode,
+    encryptedCredentials: enc.ciphertext,
+    encryptedDek: enc.encryptedDek,
+    encryptionKeyVersion: enc.keyVersion,
+    // Mark as already-tested so the UI shows it as healthy without an
+    // immediate round-trip — the spike that loaded the data already
+    // verified connectivity.
+    lastTestedAt: new Date(),
+    lastTestedStatus: "ok",
+  });
+
+  console.log("[seed] provisioned sample db_profile", {
+    tenantId,
+    dbProfileId: id,
+    profileName: SAMPLE.name,
+  });
 }
 
 /** Throw 403 if the user is not an owner/admin of the active tenant. */
