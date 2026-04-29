@@ -16,6 +16,7 @@ import { dbTools } from "./tools/db-tools";
 import { vegaLiteTools } from "./tools/vega-lite-tools";
 import { wrapCodemodeTool } from "./tools/codemode-wrap";
 import { extractFirstUserText, summarizeAndPersistTitle } from "./title-summarizer";
+import { repairDanglingToolParts } from "./repair-history";
 import { readSecret, type Env } from "./env";
 
 /**
@@ -220,6 +221,76 @@ export class ChatAgent extends Think<Env> {
    * decoration.
    */
   override async beforeTurn(): Promise<void | { system: string }> {
+    // Repair half-baked tool-call parts left over from an aborted
+    // turn (chats `236a4117` and `feca41d8` both hit this). Symptom:
+    // a previous turn aborted mid-flight (WS drop, network flap, tab
+    // close) right after the model emitted a tool call but before
+    // the sandbox produced a result. The persisted assistant message
+    // contains a `tool-codemode` (or other) part stuck in
+    // `state: "input-available"`. On the next turn the AI SDK
+    // serializes that into a `tool_use` block with no matching
+    // `tool_result` and Workers AI rejects the prefix — the user
+    // sees the generic "Something went wrong" banner with no
+    // recovery path short of `debugClearMessages`.
+    //
+    // We sweep dangling tool parts and replace each with a synthetic
+    // `output-error` envelope (same shape as `wrapCodemodeTool`'s
+    // `tool_call_interrupted` recoverable error). The model sees a
+    // recoverable failure in its history and naturally retries on
+    // the next turn — no message wipe, no user action needed.
+    //
+    // `session.updateMessage` is the lower-level mutation primitive
+    // (in-memory Session + persisted SQL update). We use it instead
+    // of `saveMessages` because the latter triggers a model turn,
+    // which would race the in-flight one we're about to start.
+    try {
+      const history = this.getMessages?.() ?? [];
+      if (Array.isArray(history) && history.length > 0) {
+        // Double-cast through `unknown`: `repairDanglingToolParts`
+        // is intentionally typed against a loose shape so it stays
+        // pure / unit-testable without dragging the AI SDK's
+        // generic `UIMessage<unknown, UIDataTypes, UITools>`
+        // through this file. `Session.updateMessage` takes a
+        // `SessionMessage`, which is structurally compatible with
+        // `UIMessage` (per the agents pkg's own comment).
+        const result = repairDanglingToolParts(
+          history as unknown as Parameters<typeof repairDanglingToolParts>[0]
+        );
+        if (result.repaired > 0) {
+          for (const detail of result.details) {
+            const repaired = result.messages[detail.messageIndex];
+            if (repaired && typeof (repaired as { id?: unknown }).id === "string") {
+              this.session.updateMessage(
+                repaired as unknown as Parameters<typeof this.session.updateMessage>[0]
+              );
+            }
+          }
+          logEvent({
+            event: "chat.history_repaired",
+            level: "warn",
+            chatId: this.name,
+            tenantId: this._cachedChatContext?.tenantId ?? null,
+            repairedCount: result.repaired,
+            // Per-occurrence diagnostics so we can tell at a glance
+            // which tool got cut off (db_query? introspect? chart?)
+            // and join against any previous turn_error / ws.close.
+            details: result.details,
+          });
+        }
+      }
+    } catch (err) {
+      // Repair is best-effort. Better to attempt the turn with a
+      // (possibly broken) history than to fail the turn outright on
+      // a defensive mutation pass. The downstream `onChatError` will
+      // still log the AI SDK rejection if the history is truly bad.
+      logEvent({
+        event: "chat.history_repair_failed",
+        level: "warn",
+        chatId: this.name,
+        error: truncateMessage(err),
+      });
+    }
+
     if (!this._cachedChatContext) {
       try {
         this._cachedChatContext = await this.resolveChatContext();
