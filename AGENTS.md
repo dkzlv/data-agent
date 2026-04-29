@@ -145,17 +145,20 @@ Key invariants:
   Connection cached on the DO (closed via DO hibernation, ~70s).
   Decrypts envelope-encrypted credentials.
 - `src/system-prompt.ts` — builds the system prompt with chat
-  context (db profile id, tenant id). Includes the
-  "stop-when-answered" guidance.
+  context (db profile id, tenant id). Three sections:
+  HEADER (persona + tool), APPROACH (db-first workflow), SAFETY
+  (read-only invariant + refusal language). ~1.4k chars total
+  (post 722e12).
 - `src/tools/db-tools.ts` — `db.introspect`, `db.query`, `db.schema`.
   SQL safety: keyword allow-list + `transaction_read_only=on` +
   `statement_timeout=25s` + `LIMIT 5000` + 4 MiB byte cap.
-- `src/tools/artifact-tools.ts` — `artifact.write*` saves to R2.
-- `src/tools/vega-lite-tools.ts` — chart spec validation; ships only
-  the validator + examples (no Vega-Lite npm in the sandbox).
-- `src/tools/artifact-tools.ts` + `src/agent.ts` (chartTools) —
-  `chart.bar`, `chart.line`, `chart.scatter` produce Vega-Lite
-  artifacts.
+- `src/tools/artifact-tools.ts` — `artifact.{save,read,list}` saves
+  to R2, plus `chart.save(spec, name?)` for Vega-Lite v5 charts.
+  The chart wrapper merges sensible defaults ($schema, width, height)
+  and runs a structural sanity check before persisting.
+- `scripts/measure-codemode.ts` — offline tool-surface size report;
+  run after editing `tools/*` to see the combined codemode tool
+  description size (the static prefix sent on every turn).
 - `src/memory/store.ts` — Drizzle CRUD on `memory_fact`. Single
   point that knows the tenant+profile predicate and the
   `(dbProfileId, contentHash)` UPSERT shape. `persistFact`,
@@ -716,11 +719,14 @@ project. Don't undo without reading the relevant context.
     so every new tenant has something to chat with immediately.
 13. **Magic-link allow-list is silent.** No enumeration. Default
     `indent.com`; configurable via `ALLOWED_EMAIL_DOMAINS`.
-14. **Stop-when-answered prompt nudge.** Originally added because
-    Kimi K2.6 liked to keep iterating after an artifact saved.
-    Kept on Claude Opus 4.7 — the nudge is harmless and sometimes
-    still needed when the model decides to "explain its work"
-    instead of calling it done.
+14. **~~Stop-when-answered prompt nudge.~~** **Removed in 722e12.**
+    Originally added because Kimi K2.6 liked to keep iterating after
+    an artifact saved. On Claude Opus 4.7 the nudge stopped paying
+    its prompt-budget rent — production traces showed Claude wraps
+    on its own once a turn produces an artifact + summary. Dropped
+    along with the rest of the Kimi-era prompt guidance (fenced
+    `async () =>` example, OUTPUT_STYLE block) when the system
+    prompt was rewritten to ~1.4k chars.
 15. **Inline `waitUntil` for title summarization** (subtask 16656a).
     Auto-titling fires from `beforeTurn` on the first user message
     via `ctx.waitUntil(summarizeAndPersistTitle(...))` — same pattern
@@ -818,6 +824,37 @@ project. Don't undo without reading the relevant context.
     to throttle. A tenant-wide limit would require a hot-path
     DB query for what the cap protects against (a runaway
     extractor, not a tenant-wide cost ceiling).
+24. **Native Anthropic endpoint, not the gateway compat endpoint**
+    (subtask 722e12). Earlier the model factory used `createOpenAI`
+    against `gateway.../compat/chat/completions` so a single client
+    surface spoke to any provider. The compat layer **strips
+    Anthropic's `cache_control` field** — every turn paid the full
+    input bill on the static `tools + system` prefix
+    (~5,500 tokens). Switching to `@ai-sdk/anthropic` against
+    `gateway.../anthropic` (BYOK preserved) lets us mark the codemode
+    tool with `providerOptions.anthropic.cacheControl: { type:
+    "ephemeral" }`. Anthropic's cache hierarchy is `tools → system →
+    messages` cumulative, so the breakpoint on the (only) tool
+    caches `tools + system` together. Verify with two consecutive
+    turns: `chat.turn_complete` reports
+    `tokens.cacheCreationInputTokens > 0` on turn 1,
+    `tokens.cacheReadInputTokens ≈ creation` on turn 2.
+    Auth note: BYOK uses `cf-aig-authorization: Bearer <token>` as
+    a custom header (the gateway substitutes the real Anthropic key);
+    the SDK's `apiKey` is a placeholder.
+25. **`chart.*` collapsed to `chart.save(spec, name?)`** (subtask
+    722e12). Earlier we shipped 5 helpers (`bar`, `line`, `scatter`,
+    `histogram`, `spec`) plus a separate `vegaLite.*` namespace with
+    a structural validator + 4 example specs. AI Gateway logs across
+    25 production turns showed 0 invocations of `vegaLite.*` and 0
+    invocations of any chart helper other than `spec` — Claude reads
+    the Vega-Lite v5 schema and writes correct specs from scratch.
+    The 5-helper + vegaLite surface added ~3k chars of tool docs
+    that produced no measurable output-quality win. `chart.save`
+    inlines the structural sanity check and merges the standard
+    defaults ($schema, width:"container", height:320). If a future
+    model regresses on spec writing, re-add the wrappers — but
+    measure first.
 
 ### Hooking new HTTP routes from the agents-SDK client surface
 

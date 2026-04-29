@@ -60,6 +60,9 @@ importers:
 
   packages/chat-agent:
     dependencies:
+      '@ai-sdk/anthropic':
+        specifier: ^3.0.72
+        version: 3.0.72(zod@4.3.6)
       '@ai-sdk/openai':
         specifier: ^3.0.54
         version: 3.0.54(zod@4.3.6)
@@ -303,6 +306,12 @@ importers:
         version: 4.86.0(@cloudflare/workers-types@4.20260426.1)
 
 packages:
+
+  '@ai-sdk/anthropic@3.0.72':
+    resolution: {integrity: sha512-t0j9mggxylA9uP0hi12NlRk2npYh4QkE7JIpws2MdV/18QzHcsT6+TNGIjbOPayLQDjrmRKx78Ym7iZkg9qRxQ==}
+    engines: {node: '>=18'}
+    peerDependencies:
+      zod: ^3.25.76 || ^4.1.8
 
   '@ai-sdk/gateway@3.0.105':
     resolution: {integrity: sha512-XpERadvLMHkYGJO4hz1Sw7Y9J705Iex48TmdZLdZdaPiFFtVgiA9qhXugLUWGAxdlXU/2N6ipoPSOwfnULZbXw==}
@@ -5219,6 +5228,12 @@ packages:
     resolution: {integrity: sha512-bXE4cR/kVZhKZX/RjPEflHaKVhUVl85noU3v6b8apfQEc1x4A+zBxjZ4lN8LqGd6WZ3dl98pY4o717VFmoPp+A==}
 
 snapshots:
+
+  '@ai-sdk/anthropic@3.0.72(zod@4.3.6)':
+    dependencies:
+      '@ai-sdk/provider': 3.0.9
+      '@ai-sdk/provider-utils': 4.0.24(zod@4.3.6)
+      zod: 4.3.6
 
   '@ai-sdk/gateway@3.0.105(zod@4.3.6)':
     dependencies:

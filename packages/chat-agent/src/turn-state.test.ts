@@ -119,6 +119,37 @@ describe("TurnState", () => {
       expect(t.tokens.reasoningTokens).toBe(300);
       expect(t.tokens.cachedInputTokens).toBe(50);
     });
+
+    it("accumulates Anthropic prompt-cache create/read tokens from providerMetadata", () => {
+      // Task 722e12: turn-complete logs cache create/read totals so
+      // we can confirm caching from `inspect-turn` alone (no AI
+      // Gateway round-trip). The provider nests the counts under
+      // `providerMetadata.anthropic.{cacheCreationInputTokens,
+      // cacheReadInputTokens}`.
+      const t = new TurnState();
+      t.start("u");
+      t.recordStep(
+        { inputTokens: 200, outputTokens: 50 },
+        { anthropic: { cacheCreationInputTokens: 1500, cacheReadInputTokens: 0 } }
+      );
+      t.recordStep(
+        { inputTokens: 50, outputTokens: 30 },
+        { anthropic: { cacheCreationInputTokens: 0, cacheReadInputTokens: 1500 } }
+      );
+      expect(t.tokens.cacheCreationInputTokens).toBe(1500);
+      expect(t.tokens.cacheReadInputTokens).toBe(1500);
+    });
+
+    it("ignores non-numeric or missing providerMetadata cache fields", () => {
+      const t = new TurnState();
+      t.start("u");
+      t.recordStep({ inputTokens: 10 }); // no metadata
+      t.recordStep({ inputTokens: 10 }, undefined);
+      t.recordStep({ inputTokens: 10 }, { anthropic: {} });
+      t.recordStep({ inputTokens: 10 }, { openai: { whatever: 1 } });
+      expect(t.tokens.cacheCreationInputTokens).toBe(0);
+      expect(t.tokens.cacheReadInputTokens).toBe(0);
+    });
   });
 
   describe("recordToolCall()", () => {

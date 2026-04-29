@@ -20,6 +20,21 @@ export interface TurnTokens {
   totalTokens: number;
   reasoningTokens: number;
   cachedInputTokens: number;
+  /**
+   * Anthropic prompt-cache *write* — input tokens charged at the
+   * 25% premium to populate the cache for this turn. Always 0 for
+   * non-Anthropic providers. The metric a deploy-time observer
+   * watches once after enabling caching: should be ~tools+system on
+   * the *first* turn of a chat, then ~0 for follow-ups.
+   */
+  cacheCreationInputTokens: number;
+  /**
+   * Anthropic prompt-cache *read* — input tokens billed at 10% of
+   * the regular input rate. Always 0 for non-Anthropic providers.
+   * On steady-state turns this should approximate the previous
+   * turn's `inputTokens` minus whatever rolled into the new prefix.
+   */
+  cacheReadInputTokens: number;
   steps: number;
 }
 
@@ -62,6 +77,8 @@ const ZERO_TOKENS: Readonly<TurnTokens> = Object.freeze({
   totalTokens: 0,
   reasoningTokens: 0,
   cachedInputTokens: 0,
+  cacheCreationInputTokens: 0,
+  cacheReadInputTokens: 0,
   steps: 0,
 });
 
@@ -205,17 +222,35 @@ export class TurnState {
    * Accumulate token usage from an AI SDK `onStepFinish` ctx. Missing
    * fields stay at 0 so a provider that returns nothing produces a
    * harmless all-zero row instead of a NaN-poisoned one.
+   *
+   * `providerMetadata` is the AI SDK's per-step provider escape
+   * hatch; for the Anthropic provider it carries
+   * `anthropic.cacheCreationInputTokens` and
+   * `anthropic.cacheReadInputTokens`. We accumulate both across the
+   * steps of a turn so `turn_complete` carries a single roll-up. The
+   * shape is loosely typed (`unknown`) because non-Anthropic
+   * providers nest different keys here and we don't want to constrain
+   * the model factory's choices.
    */
-  recordStep(usage: TurnUsageInput | undefined): TurnTokens {
+  recordStep(usage: TurnUsageInput | undefined, providerMetadata?: unknown): TurnTokens {
     this.stepCount += 1;
-    if (!usage) return this.tokens;
     const t = this.tokens;
-    t.inputTokens += usage.inputTokens ?? 0;
-    t.outputTokens += usage.outputTokens ?? 0;
-    t.totalTokens += usage.totalTokens ?? (usage.inputTokens ?? 0) + (usage.outputTokens ?? 0);
-    t.reasoningTokens += usage.reasoningTokens ?? 0;
-    t.cachedInputTokens += usage.cachedInputTokens ?? 0;
-    t.steps += 1;
+    if (usage) {
+      t.inputTokens += usage.inputTokens ?? 0;
+      t.outputTokens += usage.outputTokens ?? 0;
+      t.totalTokens += usage.totalTokens ?? (usage.inputTokens ?? 0) + (usage.outputTokens ?? 0);
+      t.reasoningTokens += usage.reasoningTokens ?? 0;
+      t.cachedInputTokens += usage.cachedInputTokens ?? 0;
+      t.steps += 1;
+    }
+    const a =
+      (providerMetadata as { anthropic?: Record<string, unknown> } | undefined)?.anthropic ?? null;
+    if (a) {
+      const create = a.cacheCreationInputTokens;
+      const read = a.cacheReadInputTokens;
+      if (typeof create === "number") t.cacheCreationInputTokens += create;
+      if (typeof read === "number") t.cacheReadInputTokens += read;
+    }
     return t;
   }
 

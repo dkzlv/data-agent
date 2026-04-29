@@ -36,16 +36,6 @@ import {
   summarizeAndPersistChat,
 } from "./memory/summarize-chat";
 
-const CODEMODE_DESCRIPTION_PREPEND =
-  "USE THIS TOOL whenever you need to introspect the schema, " +
-  "run SQL, save a chart, write an artifact, or do any other " +
-  "real work for the user. Pass the JavaScript arrow function " +
-  "as the `code` argument. NEVER reply to the user with code in " +
-  "plain text — that is a wasted turn. If you are about to write " +
-  "`async () => { ... }` in your assistant message, stop and call " +
-  "this tool instead. Only write prose to the user *after* the " +
-  "tool has run, summarizing what you found.";
-
 /**
  * ChatAgent — extends `Think`, the AI-chat-aware Agent base.
  *
@@ -263,8 +253,16 @@ export class ChatAgent extends Think<Env> implements AgentHost {
     // system-prompt builder picks it up without a separate field on
     // the prompt. Decorative — failures degrade silently to "no
     // recall" and the turn proceeds.
+    //
+    // `memoryEnabled` mirrors the gate `buildMemoryHost()` uses
+    // (tenantId + dbProfileId both resolved), so the MEMORY prompt
+    // section is rendered iff the matching `memory.*` tool surface
+    // is actually wired this turn.
     const recalledFacts = await this.recallMemoryForTurn(ctx);
-    const ctxWithRecall: ChatContext | undefined = ctx ? { ...ctx, recalledFacts } : ctx;
+    const memoryEnabled = !!(ctx?.tenantId && ctx?.dbProfileId);
+    const ctxWithRecall: ChatContext | undefined = ctx
+      ? { ...ctx, recalledFacts, memoryEnabled }
+      : ctx;
 
     if (!this.titleScheduled) {
       const result = scheduleTitleSummary({
@@ -519,8 +517,19 @@ export class ChatAgent extends Think<Env> implements AgentHost {
     }
   }
 
-  override async onStepFinish(ctx: { usage?: unknown }): Promise<void> {
-    this.pipeline.step(ctx?.usage as Parameters<TurnPipeline["step"]>[0]);
+  override async onStepFinish(ctx: {
+    usage?: unknown;
+    providerMetadata?: unknown;
+  }): Promise<void> {
+    // `providerMetadata` carries Anthropic's prompt-cache accounting
+    // (`cacheCreationInputTokens` / `cacheReadInputTokens`). The
+    // pipeline accumulates them across steps so we can log a single
+    // turn-level total on `chat.turn_complete`. See AGENTS.md
+    // decision #16 (prompt caching).
+    this.pipeline.step(
+      ctx?.usage as Parameters<TurnPipeline["step"]>[0],
+      ctx?.providerMetadata as Parameters<TurnPipeline["step"]>[1]
+    );
   }
 
   override async onChunk(ctx: { chunk?: { type?: string } }): Promise<void> {
@@ -551,7 +560,6 @@ export class ChatAgent extends Think<Env> implements AgentHost {
       env: this.env,
       host: this,
       memoryHost: this.buildMemoryHost(),
-      descriptionPrepend: CODEMODE_DESCRIPTION_PREPEND,
       onCodemodeEvent: (ev) => {
         if (ev.kind === "truncated") {
           this.turnLog.event("chat.codemode_result_truncated", {

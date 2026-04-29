@@ -10,15 +10,32 @@
  * Pulling this out gives:
  *   - One place to tweak executor opts (`SANDBOX_TIMEOUT_MS`,
  *     `SANDBOX_GLOBAL_OUTBOUND`).
- *   - Adding a tool = one line in `CAPABILITIES`.
+ *   - Adding a tool = one line in `capabilities`.
  *   - The agent's `getTools()` shrinks to a single delegation.
  *   - The wrapper's onEvent stays decoupled from the agent class
  *     (caller injects).
+ *
+ * Capability surface (post task 722e12 — kept minimal so the model
+ * spends the prompt budget on data work, not tool docs):
+ *
+ *   - `db.*`        introspect + read-only SQL
+ *   - `artifact.*`  save/read/list named outputs (markdown, csv, …)
+ *   - `chart.save`  persist a Vega-Lite v5 spec (single signature)
+ *   - `memory.*`    cross-chat fact memory (only when `memoryHost`
+ *                   is supplied — task a0e754; gated so the typed
+ *                   declarations don't land in the prompt for chats
+ *                   without a resolved tenant + dbProfile).
+ *
+ * `state.*` (~5.8k chars of FS docs in the codemode description) was
+ * dropped: cross-turn state was never used by the model, the
+ * `Workspace` instance is still wired through `host` for artifact
+ * R2 persistence. `vegaLite.*` (~1.1k chars) was dropped: 0
+ * invocations across 25 production turns and `chart.save` already
+ * validates the spec on the way to R2.
  */
 import { DynamicWorkerExecutor } from "@cloudflare/codemode";
 import { createCodeTool } from "@cloudflare/codemode/ai";
 import type { Workspace } from "@cloudflare/shell";
-import { stateTools } from "@cloudflare/shell/workers";
 import type { ToolSet } from "ai";
 import { getDataDb, type DataDbHandle } from "../data-db";
 import type { Env } from "../env";
@@ -26,7 +43,6 @@ import { memoryTools, type MemoryToolHost } from "../memory/tools";
 import { artifactTools, chartTools } from "./artifact-tools";
 import { wrapCodemodeTool, type CodemodeWrapEvent } from "./codemode-wrap";
 import { dbTools } from "./db-tools";
-import { vegaLiteTools } from "./vega-lite-tools";
 
 /** Sandbox wall-clock cap. Matches `STATEMENT_TIMEOUT_MS` (25s) +
  *  ~5s headroom for serialization, pool connect, byte-cap enforcement.
@@ -66,21 +82,23 @@ export interface BuildAgentToolsInputs {
   /** Caller-injected so logging stays in the agent's TurnLogger
    *  envelope (chatId/tenantId/userId/turnId all auto-bound). */
   onCodemodeEvent?: (ev: CodemodeWrapEvent) => void;
-  /** Optional prefix prepended to the wrapped codemode tool's
-   *  description. Belt-and-braces against the "model writes code as
-   *  text" failure mode (chat feca41d8): the system prompt
-   *  disambiguates tool-call vs assistant text, but models read tool
-   *  docs as a separate channel — putting the same directive in the
-   *  description reinforces it. */
-  descriptionPrepend?: string;
 }
 
 /**
  * Build the codemode tool set. Returns `{ codemode }` — the AI SDK
  * sees a single meta-tool; capabilities live inside the sandbox.
+ *
+ * The single tool carries an Anthropic `cache_control: ephemeral`
+ * provider option. Anthropic's prompt-cache hierarchy is
+ * `tools → system → messages` (cumulative): a breakpoint on the
+ * (only) tool definition caches **tools + system** as one prefix, so
+ * every turn after the first reads the static prefix instead of
+ * paying the full input-token bill. Required for any meaningful win
+ * against the codemode tool description (still ~5k chars even after
+ * the 722e12 trim). See AGENTS.md decision #16 for context.
  */
 export function buildAgentTools(inputs: BuildAgentToolsInputs): ToolSet {
-  const { env, host, onCodemodeEvent, descriptionPrepend, memoryHost } = inputs;
+  const { env, host, onCodemodeEvent, memoryHost } = inputs;
 
   const executor = new DynamicWorkerExecutor({
     loader: env.LOADER as never,
@@ -95,11 +113,9 @@ export function buildAgentTools(inputs: BuildAgentToolsInputs): ToolSet {
   // model never sees a `memory.*` namespace it can't actually use.
   const memoryProvider = memoryHost ? memoryTools(env, memoryHost) : null;
   const capabilities = [
-    stateTools(host.workspace),
     dbTools(() => getDataDb(dataDbInputs)),
     artifactTools(host),
     chartTools(host),
-    vegaLiteTools(),
     ...(memoryProvider ? [memoryProvider] : []),
   ];
 
@@ -117,8 +133,25 @@ export function buildAgentTools(inputs: BuildAgentToolsInputs): ToolSet {
   //     row.
   const codemode = wrapCodemodeTool(rawCodemode, {
     onEvent: onCodemodeEvent,
-    ...(descriptionPrepend ? { descriptionPrepend } : {}),
   });
 
-  return { codemode };
+  // Attach Anthropic prompt-cache breakpoint to the (only) tool
+  // entry. AI SDK forwards `Tool.providerOptions.anthropic` to
+  // Anthropic's tool definition `cache_control` field; the gateway
+  // path (native `/anthropic` endpoint) preserves it. With a single
+  // tool the breakpoint sits on the last tool by definition.
+  //
+  // Workers AI / openai-compat paths ignore unknown providerOptions
+  // keys, so this is safe to set unconditionally.
+  const upstreamProviderOptions = (codemode as { providerOptions?: Record<string, unknown> })
+    .providerOptions;
+  const codemodeCached = {
+    ...codemode,
+    providerOptions: {
+      ...upstreamProviderOptions,
+      anthropic: { cacheControl: { type: "ephemeral" } },
+    },
+  };
+
+  return { codemode: codemodeCached as typeof codemode };
 }

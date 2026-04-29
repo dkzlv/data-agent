@@ -75,9 +75,14 @@ export class TurnPipeline {
    * Per-step span. The AI SDK fires `onStepFinish` after each model
    * step with a `usage` object whose field names vary by provider;
    * we accept the loose shape and let TurnState fill in zeros.
+   *
+   * `providerMetadata` is the per-step provider escape hatch — for
+   * Anthropic it carries the prompt-cache create/read counts which
+   * the turn-state accumulates across the turn (logged as a single
+   * roll-up on `chat.turn_complete`).
    */
-  step(usage: TurnUsageInput | undefined): void {
-    const tokens = this.turn.recordStep(usage);
+  step(usage: TurnUsageInput | undefined, providerMetadata?: unknown): void {
+    const tokens = this.turn.recordStep(usage, providerMetadata);
     if (!usage) return;
     const snap = this.turn.snapshot();
     this.log.event("chat.turn_step", {
