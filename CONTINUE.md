@@ -195,19 +195,27 @@ export function createAuth(env: Env) {
 }
 ```
 
-## State as of last hand-off
+## State as of last hand-off (after subtask 5d7e7d)
 
-After scaffolding all 5 packages (subtasks 1-7 done), the workspace is in this state:
+9 of 36 subtasks done. The workspace builds and typechecks cleanly.
 
-- **Build:** `pnpm build` runs to completion. Web SSR + client bundles compile.
-- **Typecheck:** `pnpm typecheck` clean across all packages.
-- **Lint/format:** clean.
-- **Database:** Neon connected, `_health` table migrated and round-tripped successfully.
+- **Build:** `pnpm build` and `pnpm --filter @data-agent/web build` both succeed.
+- **Typecheck:** `pnpm typecheck` clean.
+- **Database:** Neon, 5 tables migrated (`_health`, `user`, `session`, `account`, `verification`).
 - **Cloudflare:**
   - R2 bucket `data-agent-artifacts` exists
-  - Secrets Store `default_secrets_store` (id `5fca98fdba4f4972b9d14ac74ea58cf4`) ready (empty; secrets pushed via `scripts/push-secrets.sh` when needed)
-  - Worker Loader + AI binding both confirmed working on this account
-  - No workers deployed yet (only local dev)
+  - Secrets Store `default_secrets_store` (id `5fca98fdba4f4972b9d14ac74ea58cf4`) — empty, push via `scripts/push-secrets.sh` before first deploy
+  - Worker Loader + AI binding confirmed working in pre-flight
+  - No workers deployed yet (only `wrangler deploy --dry-run` validations)
+- **Auth:** Better Auth + magic-link plugin wired in api-gateway + web. Magic-link emails go via CF Email Send REST API (logs to console if `CF_API_TOKEN` is unset; that's fine for dev).
+
+## Next subtask (resume here)
+
+**4cd388 — Implement session JWT minting + validation**
+
+Then: `c97933` (control-plane schema for chats/profiles/audit), `f0a0e9` (envelope encryption), `b75305` (db profile CRUD), `b1f5fd` (chat CRUD). Those four together unblock `1b9bc9` (the spike) — that's where the architecture really gets validated end-to-end.
+
+The spike is the most important task. Save energy for it; do not skimp. After the spike comes the second half of the build (tools, UI, multi-user, hardening).
 
 ## Implementation notes / gotchas accumulated so far
 
@@ -232,7 +240,7 @@ After scaffolding all 5 packages (subtasks 1-7 done), the workspace is in this s
 - [x] 616db2 Scaffold ChatAgent DO
 - [x] fde638 Scaffold web app
 - [x] 6c7414 Better Auth in control-plane
-- [ ] 5d7e7d Wire web app to Better Auth
+- [x] 5d7e7d Wire web app to Better Auth
 - [ ] 4cd388 Session JWT minting + validation
 - [ ] c97933 Design control-plane DB schema
 - [ ] f0a0e9 Envelope encryption for DB creds
