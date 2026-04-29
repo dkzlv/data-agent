@@ -156,12 +156,29 @@ describe("RateLimitError", () => {
     expect(err.max).toBe(50);
     expect(err.windowMs).toBe(86_400_000);
     expect(err.current).toBe(50);
-    expect(err.message).toContain("rate_limit_chat_daily");
-    expect(err.message).toContain("50/50");
   });
 
-  it("formats the window in minutes for the message", () => {
+  it("encodes a structured agent-error envelope as the .message", () => {
+    const err = new RateLimitError("rate_limit_chat_daily", 50, 86_400_000, 50);
+    expect(err.message.startsWith("DATA_AGENT_ERROR\n")).toBe(true);
+    const json = err.message.split("\n", 2)[1]!;
+    const parsed = JSON.parse(json);
+    expect(parsed.code).toBe("rate_limit_chat_daily");
+    expect(parsed.message).toContain("rate_limit_chat_daily");
+    expect(parsed.message).toContain("50/50");
+    expect(parsed.details).toMatchObject({
+      max: 50,
+      windowMs: 86_400_000,
+      current: 50,
+    });
+    expect(typeof parsed.details.retryAt).toBe("string");
+    // ISO 8601 sanity
+    expect(Number.isFinite(Date.parse(parsed.details.retryAt))).toBe(true);
+  });
+
+  it("formats the window in minutes inside the inner message", () => {
     const err = new RateLimitError("rate_limit_user_hourly", 20, 60 * 60 * 1000, 20);
-    expect(err.message).toContain("60min");
+    const inner = JSON.parse(err.message.split("\n", 2)[1]!);
+    expect(inner.message).toContain("60min");
   });
 });

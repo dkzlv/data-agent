@@ -74,6 +74,11 @@ export const DEFAULT_POLICY = {
   },
 } as const;
 
+// Import from shared so the web client decodes against the same
+// canonical envelope shape (subtask 2f89ff). The encoder/prefix live
+// in `@data-agent/shared/agent-error`.
+import { encodeAgentError } from "@data-agent/shared";
+
 export class RateLimitError extends Error {
   constructor(
     public readonly code: string,
@@ -81,7 +86,27 @@ export class RateLimitError extends Error {
     public readonly windowMs: number,
     public readonly current: number
   ) {
-    super(`rate limit hit: ${code} (${current}/${max} in ${Math.round(windowMs / 60000)}min)`);
+    // Keep `.message` as a structured envelope so the web client can
+    // render a precise banner (e.g. "Daily chat cap reached — resets
+    // at 12:00 UTC") instead of a generic "connection error".
+    super(
+      encodeAgentError({
+        code,
+        message: `rate limit hit: ${code} (${current}/${max} in ${Math.round(windowMs / 60000)}min)`,
+        details: {
+          max,
+          windowMs,
+          current,
+          // Earliest retry time, computed conservatively as
+          // (now + remainingWindow). For a sliding 24h window this is
+          // wrong (the oldest event might age out sooner), but
+          // erring later keeps us from advertising a too-optimistic
+          // retry — better UX than the user retrying immediately
+          // and hitting the limit again.
+          retryAt: new Date(Date.now() + windowMs).toISOString(),
+        },
+      })
+    );
     this.name = "RateLimitError";
   }
 }

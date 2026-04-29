@@ -21,6 +21,7 @@ import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { ArtifactViewer, asArtifactRef } from "./ArtifactViewer";
 import { getChatHost } from "~/lib/chat-host";
+import { type FriendlyError, toFriendlyError } from "~/lib/agent-error";
 
 export interface ChatMemberSummary {
   userId: string;
@@ -136,7 +137,11 @@ export function ChatRoom({ chatId, title, members = [] }: ChatRoomProps): React.
         </header>
       ) : null}
 
-      <MessageList messages={chat.messages as UIMessage[]} status={chat.status} />
+      <MessageList
+        messages={chat.messages as UIMessage[]}
+        status={chat.status}
+        error={chat.error}
+      />
 
       <Composer
         disabled={chat.status === "streaming" || chat.status === "submitted"}
@@ -154,11 +159,21 @@ export function ChatRoom({ chatId, title, members = [] }: ChatRoomProps): React.
 function MessageList({
   messages,
   status,
+  error,
 }: {
   messages: UIMessage[];
   status: string;
+  /**
+   * `chat.error` from useAgentChat — an `Error` whose `.message` is
+   * either a plain string (network/AI SDK failure) or our structured
+   * `DATA_AGENT_ERROR\n{...}` envelope (anticipated server-side
+   * failures: rate limits, sandbox timeouts, SQL errors). The
+   * translator handles both shapes.
+   */
+  error?: Error;
 }): React.ReactElement {
   const ref = useRef<HTMLDivElement | null>(null);
+  const friendly = toFriendlyError(error);
 
   return (
     <div
@@ -170,9 +185,50 @@ function MessageList({
         <MessageBubble key={m.id} message={m} />
       ))}
       {status === "streaming" && <p className="text-xs text-neutral-500">… thinking</p>}
-      {status === "error" && (
+      {/*
+        We render the error banner as the *last* item in the message
+        list (rather than a fixed banner at the top) so it appears
+        in-context with the failed turn. It auto-clears as soon as
+        the user sends the next message — `chat.error` resets on the
+        next sendMessage call.
+      */}
+      {friendly && <ErrorBanner friendly={friendly} />}
+      {/*
+        `status === "error"` is set by the AI SDK whenever the
+        request errors at the transport layer (e.g. WS close mid-
+        stream). When `chat.error` is also populated we let the
+        banner above speak for the failure; otherwise show a
+        connection-level fallback.
+      */}
+      {status === "error" && !friendly && (
         <p className="text-xs text-red-600 dark:text-red-400">Connection error — reconnecting…</p>
       )}
+    </div>
+  );
+}
+
+function ErrorBanner({ friendly }: { friendly: FriendlyError }): React.ReactElement {
+  // Tailwind classes are statically referenced (no string
+  // interpolation into a class name) so the JIT picks them up
+  // reliably across all severity branches.
+  const styles = {
+    info: "border-blue-200 bg-blue-50 text-blue-900 dark:border-blue-900/50 dark:bg-blue-950/30 dark:text-blue-200",
+    warn: "border-amber-200 bg-amber-50 text-amber-900 dark:border-amber-900/50 dark:bg-amber-950/30 dark:text-amber-200",
+    error:
+      "border-red-200 bg-red-50 text-red-900 dark:border-red-900/50 dark:bg-red-950/30 dark:text-red-200",
+  }[friendly.severity];
+  return (
+    <div
+      role="alert"
+      className={`flex items-start gap-3 rounded-md border px-3 py-2 text-sm ${styles}`}
+    >
+      <span aria-hidden className="mt-0.5 select-none">
+        {friendly.severity === "error" ? "⚠" : "ℹ"}
+      </span>
+      <div className="space-y-0.5">
+        <p className="font-medium">{friendly.title}</p>
+        {friendly.detail ? <p className="text-xs opacity-80">{friendly.detail}</p> : null}
+      </div>
     </div>
   );
 }
@@ -337,9 +393,27 @@ function ToolPart({ part }: { part: UIPart }): React.ReactElement {
   }[status];
   const statusLabel = { ok: "✓", err: "✗", run: "…" }[status];
 
+  // Friendly one-line summary for tool errors. Most tool failures
+  // are SQL errors, sandbox timeouts, or read-only-mode rejections —
+  // worth surfacing above the collapsed details so the user knows
+  // why the turn failed without expanding.
+  const errorSummary =
+    status === "err" && part.errorText ? summarizeToolError(rawToolName, part.errorText) : null;
+
   return (
-    <div className="my-1">
+    <div className="my-1 space-y-1">
       {artifact ? <ArtifactViewer ref={artifact} /> : null}
+      {errorSummary && (
+        <p className="text-xs text-red-700 dark:text-red-300">
+          <span className="font-medium">{errorSummary.headline}</span>
+          {errorSummary.detail ? (
+            <>
+              {" — "}
+              <span className="opacity-80">{errorSummary.detail}</span>
+            </>
+          ) : null}
+        </p>
+      )}
       <details className="group rounded-lg border border-neutral-200 bg-white/60 text-xs dark:border-neutral-800 dark:bg-black/20">
         <summary className="flex cursor-pointer select-none items-center gap-2 px-2.5 py-1.5">
           <span
@@ -484,6 +558,48 @@ function safeJsonStringify(v: unknown): string {
   } catch {
     return String(v);
   }
+}
+
+/**
+ * Translate a raw tool error into a one-line, user-readable summary.
+ * Tool errors (subtask 2f89ff) are mostly SQL/sandbox failures
+ * surfaced via the AI SDK's `part.errorText` — the raw text is
+ * usually a stringified Postgres error or a sandbox timeout. We
+ * detect a few well-known patterns and fall back to truncation
+ * otherwise. Never echo a raw stack trace.
+ */
+function summarizeToolError(
+  toolName: string,
+  errorText: string
+): { headline: string; detail?: string } {
+  const t = errorText.toLowerCase();
+  if (t.includes("statement timeout") || t.includes("canceling statement"))
+    return {
+      headline: "Database query timed out",
+      detail: "Try a smaller scan or add a tighter `WHERE`.",
+    };
+  if (t.includes("permission denied") || t.includes("must be owner"))
+    return {
+      headline: "Database refused the query",
+      detail: "The agent's role doesn't have access to that table.",
+    };
+  if (t.includes("relation") && t.includes("does not exist"))
+    return { headline: "Table doesn't exist", detail: errorText.slice(0, 140) };
+  if (t.includes("syntax error"))
+    return { headline: "SQL syntax error", detail: errorText.slice(0, 140) };
+  if (t.includes("read-only") || t.includes("read only"))
+    return {
+      headline: "Only SELECT queries are allowed",
+      detail: "The agent can't run mutations.",
+    };
+  if (t.includes("sandbox") && t.includes("timeout"))
+    return {
+      headline: "Tool ran out of time",
+      detail: "The data step took longer than 30 seconds.",
+    };
+  // Generic fallback: surface the tool name + a truncated message.
+  const detail = errorText.length > 160 ? `${errorText.slice(0, 160)}…` : errorText;
+  return { headline: `${toolName} failed`, detail };
 }
 
 function MembersPopover({
