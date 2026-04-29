@@ -10,6 +10,21 @@
     "enabled": true
   },
 
+  // Raise CPU time from default 30 s → 5 min. Long multi-step LLM
+  // turns (introspect → query → query → chart → final reply) can
+  // accumulate >30 s of *actual CPU* across stream chunk parsing,
+  // JSON serialization, and broadcast fan-out — even when the wall
+  // clock is dominated by Workers AI inference. Hitting the 30 s
+  // CPU cap kills the request mid-stream and the client sees an
+  // abort. We measured 56 s wall on chat 62605d6f (5-step turn);
+  // bumping to 300 s gives comfortable headroom.
+  //
+  // Wall time on DOs is unlimited as long as the WS stays open, so
+  // raising CPU is the only knob.
+  "limits": {
+    "cpu_ms": 300000
+  },
+
   "vars": {
     "APP_URL": "https://app.data-agent.dkzlv.com",
     "API_URL": "https://api.data-agent.dkzlv.com",

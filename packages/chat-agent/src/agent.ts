@@ -53,6 +53,71 @@ const DEFAULT_REASONING_EFFORT: "low" | "medium" | "high" = "medium";
  * `Think` not being misconfigured. Persistence is anchored to `this.name`
  * (the chat id), so cross-chat isolation comes from the DO name routing.
  */
+/**
+ * Count active WS connections to the agent. Used in observability
+ * spans so we can correlate "WS dropped" events with "turn aborted"
+ * (subtask 9fa055 streaming-debug).
+ *
+ * Uses a duck-typed cast because `agents`'s base class exposes
+ * `getConnections()` typed for state-narrowing — we just need a count.
+ */
+function countConnections(agent: { getConnections: () => Iterable<unknown> }): number {
+  let n = 0;
+  // biome-ignore lint/correctness/noUnusedVariables: counting only
+  for (const _ of agent.getConnections()) n++;
+  return n;
+}
+
+/**
+ * Pull the diagnostics-relevant fields out of an arbitrary thrown
+ * value. We *always* want:
+ *
+ *   - error class name (`AbortError`, `TypeError`, ...)
+ *   - the message (truncated)
+ *   - one level of `cause` (the AI SDK and `fetch` both wrap
+ *     transport failures; the cause is where the actual reason
+ *     lives — "TLS handshake failed", "Aborted by signal", etc.)
+ *   - whether this is "an abort" — true for `AbortError`, true if
+ *     the message contains "aborted" (covers DOM `AbortSignal`,
+ *     stream-controller aborts, agents-SDK cancel propagation).
+ *
+ * Returns a small object so downstream loggers / audit writers
+ * don't each re-implement the destructuring.
+ */
+function describeError(err: unknown): {
+  name: string;
+  message: string;
+  cause: string | null;
+  isAbort: boolean;
+} {
+  if (err instanceof Error) {
+    const causeRaw = (err as Error & { cause?: unknown }).cause;
+    const cause = causeRaw
+      ? causeRaw instanceof Error
+        ? `${causeRaw.name}: ${causeRaw.message}`
+        : String(causeRaw)
+      : null;
+    const msg = err.message ?? "";
+    const isAbort =
+      err.name === "AbortError" ||
+      msg === "BodyStreamBuffer was aborted" ||
+      msg.toLowerCase().includes("aborted");
+    return {
+      name: err.name || "Error",
+      message: msg.slice(0, 500),
+      cause: cause ? cause.slice(0, 500) : null,
+      isAbort,
+    };
+  }
+  const s = String(err);
+  return {
+    name: "non-error",
+    message: s.slice(0, 500),
+    cause: null,
+    isAbort: s.toLowerCase().includes("aborted"),
+  };
+}
+
 export class ChatAgent extends Think<Env> {
   override workspace = new Workspace({
     sql: this.ctx.storage.sql,
@@ -185,9 +250,18 @@ export class ChatAgent extends Think<Env> {
       }
     }
 
-    // Mark the turn start for observability span timing (9fa055).
-    // `onChatResponse` / `onChatError` read this to compute durationMs.
+    // Mark the turn start for observability span timing (9fa055)
+    // and assign a fresh `turnId` so every event for this turn —
+    // start, each step, every Nth chunk, tool-call, complete/error,
+    // and any onClose during the turn — can be joined in Workers
+    // Logs by a single field.
     this._turnStartedAt = Date.now();
+    this._turnId = `t_${Math.random().toString(36).slice(2, 10)}_${Date.now().toString(36)}`;
+    this._lastChunkAt = Date.now();
+    this._lastChunkType = null;
+    this._chunkCount = 0;
+    this._stepCount = 0;
+    this._toolCalls = [];
 
     // Audit (1dd311) — record turn.start. Best-effort, never blocks.
     if (tenantId) {
@@ -198,7 +272,10 @@ export class ChatAgent extends Think<Env> {
           userId: this._currentTurnUserId ?? null,
           action: "turn.start",
           target: this.name,
-          payload: { dbProfileId: this._cachedChatContext?.dbProfileId ?? null },
+          payload: {
+            dbProfileId: this._cachedChatContext?.dbProfileId ?? null,
+            turnId: this._turnId,
+          },
         })
       );
     }
@@ -211,6 +288,10 @@ export class ChatAgent extends Think<Env> {
       userId: this._currentTurnUserId ?? null,
       dbProfileId: this._cachedChatContext?.dbProfileId ?? null,
       model: this._modelId,
+      turnId: this._turnId,
+      // How many WS connections are currently attached, so we can
+      // correlate `onClose` (drops) with in-flight turns later.
+      connections: countConnections(this),
     });
 
     return { system: buildSystemPrompt(this._cachedChatContext) };
@@ -311,6 +392,60 @@ export class ChatAgent extends Think<Env> {
     t.reasoningTokens += u.reasoningTokens ?? 0;
     t.cachedInputTokens += u.cachedInputTokens ?? 0;
     t.steps += 1;
+
+    // Streaming-debug observability: emit a step span with cumulative
+    // tokens + how long since the turn started. If a turn aborts, the
+    // last logged step tells us how far the model got. Combined with
+    // `chat.turn_chunk` heartbeats this triangulates *where* a stall
+    // happens (between steps vs. mid-step vs. mid-tool).
+    this._stepCount += 1;
+    logEvent({
+      event: "chat.turn_step",
+      chatId: this.name,
+      turnId: this._turnId,
+      stepIndex: t.steps,
+      stepTokensIn: u.inputTokens ?? 0,
+      stepTokensOut: u.outputTokens ?? 0,
+      cumulativeTokensIn: t.inputTokens,
+      cumulativeTokensOut: t.outputTokens,
+      cachedInputTokens: u.cachedInputTokens ?? 0,
+      msSinceTurnStart: this._turnStartedAt > 0 ? Date.now() - this._turnStartedAt : null,
+      msSinceLastChunk: this._lastChunkAt > 0 ? Date.now() - this._lastChunkAt : null,
+      lastChunkType: this._lastChunkType,
+      chunkCount: this._chunkCount,
+    });
+  }
+
+  /**
+   * Per-chunk hook (streaming-debug). High-frequency: this fires per
+   * token/event from the model stream. We use it as a heartbeat —
+   * stamping `_lastChunkAt` lets `chat.turn_step` and
+   * `chat.turn_complete` report "ms since last chunk", which
+   * pinpoints whether an abort happened mid-stream (model went
+   * silent) vs. between sub-requests (network hiccup).
+   *
+   * We log a sample (1 in 50) so high-volume streams don't spam
+   * Workers Logs, but the heartbeat fields update on every chunk.
+   */
+  override async onChunk(ctx: { chunk?: { type?: string } }): Promise<void> {
+    const type = ctx?.chunk?.type ?? "unknown";
+    this._lastChunkAt = Date.now();
+    this._lastChunkType = type;
+    this._chunkCount += 1;
+    // Log every 50th chunk + always log non-text-delta chunks (tool
+    // input/result/finish). text-delta is the bulk so suppression
+    // there saves the most.
+    if (type !== "text-delta" || this._chunkCount % 50 === 0) {
+      logEvent({
+        event: "chat.turn_chunk",
+        level: "debug",
+        chatId: this.name,
+        turnId: this._turnId,
+        chunkType: type,
+        chunkIndex: this._chunkCount,
+        msSinceTurnStart: this._turnStartedAt > 0 ? Date.now() - this._turnStartedAt : null,
+      });
+    }
   }
 
   /**
@@ -335,6 +470,8 @@ export class ChatAgent extends Think<Env> {
 
     // Observability span (9fa055) — fires for *every* completed turn,
     // even when no tenant is resolvable (so we can debug bad routing).
+    // status: "completed" | "aborted" | "error".
+    const msSinceLastChunk = this._lastChunkAt > 0 ? Date.now() - this._lastChunkAt : null;
     logEvent({
       event: "chat.turn_complete",
       chatId: this.name,
@@ -345,6 +482,22 @@ export class ChatAgent extends Think<Env> {
       model: this._modelId,
       gatewayId: this.env.AI_GATEWAY_ID ?? null,
       tokens,
+      turnId: this._turnId,
+      stepCount: this._stepCount,
+      chunkCount: this._chunkCount,
+      lastChunkType: this._lastChunkType,
+      msSinceLastChunk,
+      toolCalls: [...this._toolCalls],
+      connections: countConnections(this),
+      // Aborts in particular: which side aborted? If the WS already
+      // closed before this fires, count == 0 → client disconnected.
+      // If count > 0, server-side abort (signal fired internally).
+      abortLikelyFrom:
+        result.status === "aborted"
+          ? countConnections(this) === 0
+            ? "client_disconnect"
+            : "server_signal"
+          : null,
     });
 
     if (!tenantId) return;
@@ -379,12 +532,57 @@ export class ChatAgent extends Think<Env> {
   /** Wall-clock start of the current turn (9fa055). */
   private _turnStartedAt: number = 0;
 
-  /** Audit hook (1dd311) — turn errored. */
+  /**
+   * Per-turn observability state (9fa055 / streaming-debug).
+   *
+   * `turnId` is a short opaque id stamped on every event in a turn
+   * so Workers Logs can join `chat.turn_start`, every `chat.turn_step`,
+   * a sample of `chat.turn_chunk`, the final
+   * `chat.turn_complete`/`chat.turn_error`, and any `chat.ws.close`
+   * that happens while the turn is in flight.
+   *
+   * `lastChunkAt`/`lastChunkType` give us the heartbeat — if the
+   * turn aborts we report the gap since the last chunk, which
+   * pinpoints whether the model went silent vs. the WS dropped vs.
+   * a tool call hung.
+   */
+  private _turnId: string | null = null;
+  private _lastChunkAt: number = 0;
+  private _lastChunkType: string | null = null;
+  private _chunkCount: number = 0;
+  private _stepCount: number = 0;
+  private _toolCalls: string[] = [];
+
+  /**
+   * Turn-error hook (1dd311 + streaming-debug).
+   *
+   * Captures the maximum diagnostics we can squeeze out of the
+   * failure path. Three things matter beyond the error itself:
+   *
+   *   1. **Error class** — `AbortError`, `TypeError`, regular `Error`
+   *      → tells us if it was an abort vs. a real error.
+   *   2. **`error.cause` chain** — the AI SDK wraps fetch failures
+   *      with `cause`; we walk one level so e.g. `Network request
+   *      failed → cause: TLS reset` is visible.
+   *   3. **What was streaming when it failed** — last chunk type,
+   *      ms since last chunk, step count, tool-call sequence. This
+   *      is what tells us "the model went silent at step 5 mid-tool"
+   *      vs. "the WS dropped between step 3 and step 4".
+   */
   override onChatError(error: unknown): unknown {
     const tenantId = this._cachedChatContext?.tenantId;
     const durationMs = this._turnStartedAt > 0 ? Date.now() - this._turnStartedAt : null;
+    const msSinceLastChunk = this._lastChunkAt > 0 ? Date.now() - this._lastChunkAt : null;
+
+    const errInfo = describeError(error);
+    const turnId = this._turnId;
+    const stepCount = this._stepCount;
+    const chunkCount = this._chunkCount;
+    const lastChunkType = this._lastChunkType;
+    const toolCalls = [...this._toolCalls];
+
     // Reset turn timer so a follow-on turn can't measure against
-    // the failed one.
+    // the failed one. (Heartbeat fields are reset in beforeTurn.)
     this._turnStartedAt = 0;
 
     // Observability span (9fa055).
@@ -396,9 +594,19 @@ export class ChatAgent extends Think<Env> {
       userId: this._currentTurnUserId ?? null,
       durationMs,
       model: this._modelId,
-      // Use the same truncation envelope as audit so logs and audit
-      // rows reference the same error text.
-      error: truncateMessage(error, 240),
+      turnId,
+      // Triangulation fields — *where* in the turn the failure hit.
+      stepCount,
+      chunkCount,
+      lastChunkType,
+      msSinceLastChunk,
+      toolCalls,
+      connections: countConnections(this),
+      // Error shape.
+      errorName: errInfo.name,
+      errorMessage: errInfo.message,
+      errorCause: errInfo.cause,
+      isAbort: errInfo.isAbort,
     });
 
     if (tenantId) {
@@ -409,7 +617,18 @@ export class ChatAgent extends Think<Env> {
           userId: this._currentTurnUserId ?? null,
           action: "turn.error",
           target: this.name,
-          payload: { error: String((error as Error)?.message ?? error).slice(0, 500) },
+          payload: {
+            error: errInfo.message.slice(0, 500),
+            errorName: errInfo.name,
+            errorCause: errInfo.cause,
+            isAbort: errInfo.isAbort,
+            turnId,
+            stepCount,
+            chunkCount,
+            lastChunkType,
+            msSinceLastChunk,
+            durationMs,
+          },
         })
       );
     }
@@ -429,6 +648,12 @@ export class ChatAgent extends Think<Env> {
     const tenantId = this._cachedChatContext?.tenantId;
     const name = ctx.toolName;
 
+    // Track per-turn tool sequence for streaming-debug. Capped at
+    // 50 entries to keep memory bounded across pathological loops.
+    if (this._toolCalls.length < 50) {
+      this._toolCalls.push(`${name}${ctx.success ? "" : "!"}`);
+    }
+
     // Observability span (9fa055) — fires for every tool call, even
     // un-audited ones. Lets us spot pathological model behavior
     // (e.g. spinning on chart tools, oscillating between db_query
@@ -439,9 +664,11 @@ export class ChatAgent extends Think<Env> {
       chatId: this.name,
       tenantId: tenantId ?? null,
       userId: this._currentTurnUserId ?? null,
+      turnId: this._turnId,
       tool: name,
       success: ctx.success,
       durationMs: ctx.durationMs,
+      msSinceTurnStart: this._turnStartedAt > 0 ? Date.now() - this._turnStartedAt : null,
     });
 
     if (!tenantId) return;
@@ -584,6 +811,19 @@ export class ChatAgent extends Think<Env> {
     const tenantId = ctx.request.headers.get("x-data-agent-tenant-id") ?? "";
     connection.setState({ userId, tenantId, joinedAt: Date.now() } as never);
     this.broadcastPresence();
+
+    // Streaming-debug: log every WS attach so we can correlate with
+    // turn aborts. The `connectionId` lets us group ws.connect with
+    // the corresponding ws.close even when multiple users share a
+    // chat.
+    logEvent({
+      event: "chat.ws.connect",
+      chatId: this.name,
+      userId,
+      tenantId,
+      connectionId: connection.id,
+      activeConnections: countConnections(this),
+    });
   }
 
   override async onClose(
@@ -592,6 +832,41 @@ export class ChatAgent extends Think<Env> {
     reason: string,
     wasClean: boolean
   ): Promise<void> {
+    type PresenceState = { userId?: string; tenantId?: string; joinedAt?: number };
+    const state = connection.state as PresenceState | undefined;
+    const sessionMs = state?.joinedAt && state.joinedAt > 0 ? Date.now() - state.joinedAt : null;
+
+    // Streaming-debug: this is the single most useful event when
+    // diagnosing "why did my turn abort". WebSocket close codes:
+    //   1000 normal closure
+    //   1001 going away (browser tab/page closed) — common
+    //   1006 abnormal — connection lost, no close frame (network
+    //        flap, tab crash). This is what we saw on chat 62605d6f.
+    //   1011 server error
+    //   1012 service restart
+    //   4xxx application-defined (think uses 1000/1001 mostly)
+    //
+    // We deliberately log this BEFORE super.onClose so the in-flight
+    // turn id (if any) is still bound. (Think's onClose only resets
+    // continuation state, doesn't touch our `_turnId`.)
+    logEvent({
+      event: "chat.ws.close",
+      level: wasClean ? "info" : "warn",
+      chatId: this.name,
+      userId: state?.userId ?? null,
+      tenantId: state?.tenantId ?? null,
+      connectionId: connection.id,
+      code,
+      reason: reason ? reason.slice(0, 200) : "",
+      wasClean,
+      sessionMs,
+      // If there's an active turn, this close is *almost certainly*
+      // why it'll be reported as aborted.
+      activeTurnId: this._turnId,
+      msSinceLastChunk: this._lastChunkAt > 0 ? Date.now() - this._lastChunkAt : null,
+      remainingConnections: Math.max(0, countConnections(this) - 1),
+    });
+
     await super.onClose(connection, code, reason, wasClean);
     // Connection is already removed from `getConnections()` by the time
     // onClose runs, so the broadcast naturally reflects the new state.

@@ -75,18 +75,50 @@ export function ChatRoom({ chatId, title, members = [] }: ChatRoomProps): React.
     credentials: "include",
   });
 
-  // Diagnostic: log every WS lifecycle event so any disconnect /
-  // failure-to-connect shows up immediately in the browser console.
+  // Diagnostic: log every WS lifecycle event with timestamps so any
+  // disconnect / failure-to-connect can be correlated with server-
+  // side `chat.ws.close` events in Workers Logs by ts.
   // Cheap, only fires on state change.
   useEffect(() => {
-    const onOpen = () => console.log("[chat-room] WS open");
-    const onClose = (e: CloseEvent) =>
-      console.warn("[chat-room] WS close", {
-        code: e.code,
-        reason: e.reason,
-        wasClean: e.wasClean,
+    const openedAt = { current: 0 };
+    const onOpen = () => {
+      openedAt.current = Date.now();
+      console.log("[chat-room] WS open", {
+        at: new Date().toISOString(),
+        chatId,
       });
-    const onError = (e: Event) => console.error("[chat-room] WS error", e);
+    };
+    const onClose = (e: CloseEvent) => {
+      const sessionMs = openedAt.current ? Date.now() - openedAt.current : null;
+      // Decode common close codes for at-a-glance diagnosis.
+      const codeLabels: Record<number, string> = {
+        1000: "normal",
+        1001: "going_away",
+        1006: "abnormal_no_close_frame",
+        1011: "server_error",
+        1012: "service_restart",
+        1013: "try_again_later",
+      };
+      console.warn("[chat-room] WS close", {
+        at: new Date().toISOString(),
+        chatId,
+        code: e.code,
+        codeLabel: codeLabels[e.code] ?? "unknown",
+        reason: e.reason || "(empty)",
+        wasClean: e.wasClean,
+        sessionMs,
+        // Browser/network state hints — invaluable for
+        // "did the user's tab go to sleep" investigations.
+        documentVisibility: typeof document !== "undefined" ? document.visibilityState : null,
+        online: typeof navigator !== "undefined" ? navigator.onLine : null,
+      });
+    };
+    const onError = (e: Event) =>
+      console.error("[chat-room] WS error", {
+        at: new Date().toISOString(),
+        chatId,
+        event: e,
+      });
     agent.addEventListener("open", onOpen);
     agent.addEventListener("close", onClose);
     agent.addEventListener("error", onError);
@@ -95,7 +127,7 @@ export function ChatRoom({ chatId, title, members = [] }: ChatRoomProps): React.
       agent.removeEventListener("close", onClose);
       agent.removeEventListener("error", onError);
     };
-  }, [agent]);
+  }, [agent, chatId]);
 
   // Presence: the ChatAgent broadcasts `{ type: 'data_agent_presence',
   // users: [{ userId, joinedAt }] }` whenever the connected set changes.

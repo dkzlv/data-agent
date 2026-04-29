@@ -10,6 +10,13 @@
     "enabled": true
   },
 
+  // Match chat-agent's CPU bump (5 min). The api-gateway is the
+  // entry point for the WebSocket upgrade, so its request lifetime
+  // spans the full chat session — same CPU-cap exposure as the DO.
+  "limits": {
+    "cpu_ms": 300000
+  },
+
   "vars": {
     // workers.dev URLs until custom domains are provisioned. Cookies on
     // workers.dev can't be cross-subdomain, so the alpha is single-host:

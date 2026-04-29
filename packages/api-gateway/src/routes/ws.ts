@@ -17,7 +17,7 @@
  */
 import { and, eq } from "drizzle-orm";
 import { Hono } from "hono";
-import { mintChatToken } from "@data-agent/shared";
+import { logEvent, mintChatToken, truncateMessage } from "@data-agent/shared";
 import { schema } from "@data-agent/db";
 import { writeAudit } from "../audit";
 import { readSecret, type Env } from "../env";
@@ -104,7 +104,41 @@ wsRouter.get("/chats/:id/ws", requireSession(), async (c) => {
     })
   );
 
-  return c.env.CHAT_AGENT.fetch(fwdReq);
+  // Streaming-debug observability: log the upgrade hand-off so we
+  // can correlate gateway-side reverse-proxy timing with the
+  // chat-agent's `chat.ws.connect`. If the upstream call ever
+  // throws (service binding error), the catch block logs the
+  // failure too — currently invisible to the user.
+  logEvent({
+    event: "ws.upgrade",
+    chatId,
+    userId: user.id,
+    tenantId,
+    cfRay: c.req.header("cf-ray") ?? null,
+  });
+
+  try {
+    const upstream = await c.env.CHAT_AGENT.fetch(fwdReq);
+    logEvent({
+      event: "ws.upgrade_response",
+      chatId,
+      userId: user.id,
+      status: upstream.status,
+      // 101 means the upgrade succeeded. Anything else means the
+      // chat-agent rejected the WS (auth fail, route miss).
+      upgraded: upstream.status === 101,
+    });
+    return upstream;
+  } catch (err) {
+    logEvent({
+      event: "ws.upgrade_failed",
+      level: "error",
+      chatId,
+      userId: user.id,
+      error: truncateMessage(err),
+    });
+    throw err;
+  }
 });
 
 /**
