@@ -19,6 +19,7 @@ import { useAgent } from "agents/react";
 import { useAgentChat } from "@cloudflare/ai-chat/react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
+import { ArtifactViewer, asArtifactRef } from "./ArtifactViewer";
 import { getChatHost } from "~/lib/chat-host";
 
 interface ChatRoomProps {
@@ -176,23 +177,30 @@ function ToolPart({ part }: { part: UIPart }): React.ReactElement {
   const toolName = part.toolName ?? part.type?.replace(/^tool-/, "") ?? "tool";
   const status =
     part.state === "output-available" ? "✓" : part.state === "output-error" ? "✗" : "…";
+
+  // Surface artifacts inline when the tool result carries one.
+  const artifact = part.output != null ? asArtifactRef(part.output) : null;
+
   return (
-    <details className="my-2 rounded border border-neutral-300 bg-white/40 px-2 py-1 text-xs dark:border-neutral-700 dark:bg-black/20">
-      <summary className="cursor-pointer select-none font-mono">
-        {status} {toolName}
-      </summary>
-      {part.input != null && (
-        <pre className="mt-1 max-h-72 overflow-auto whitespace-pre-wrap break-words text-[10px] leading-snug">
-          {safeJsonStringify(part.input)}
-        </pre>
-      )}
-      {part.output != null && (
-        <pre className="mt-1 max-h-72 overflow-auto whitespace-pre-wrap break-words border-t border-neutral-300 pt-1 text-[10px] leading-snug dark:border-neutral-700">
-          {safeJsonStringify(part.output)}
-        </pre>
-      )}
-      {part.errorText && <p className="mt-1 text-red-600 dark:text-red-400">{part.errorText}</p>}
-    </details>
+    <div className="my-1">
+      {artifact ? <ArtifactViewer ref={artifact} /> : null}
+      <details className="rounded border border-neutral-300 bg-white/40 px-2 py-1 text-xs dark:border-neutral-700 dark:bg-black/20">
+        <summary className="cursor-pointer select-none font-mono">
+          {status} {toolName}
+        </summary>
+        {part.input != null && (
+          <pre className="mt-1 max-h-72 overflow-auto whitespace-pre-wrap break-words text-[10px] leading-snug">
+            {safeJsonStringify(part.input)}
+          </pre>
+        )}
+        {part.output != null && (
+          <pre className="mt-1 max-h-72 overflow-auto whitespace-pre-wrap break-words border-t border-neutral-300 pt-1 text-[10px] leading-snug dark:border-neutral-700">
+            {safeJsonStringify(part.output)}
+          </pre>
+        )}
+        {part.errorText && <p className="mt-1 text-red-600 dark:text-red-400">{part.errorText}</p>}
+      </details>
+    </div>
   );
 }
 

@@ -24,6 +24,8 @@
     "react-dom": "^19.2.0",
     "react-markdown": "^10.1.0",
     "remark-gfm": "^4.0.1",
+    "vega-embed": "^7.0.2",
+    "vega-lite": "^6.4.0",
     "zod": "^4.3.6"
   },
   "devDependencies": {
