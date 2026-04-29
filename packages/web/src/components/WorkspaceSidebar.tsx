@@ -9,7 +9,7 @@
  */
 import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { ArtifactViewer, type ArtifactRef } from "./ArtifactViewer";
+import { ArtifactViewer, resolveArtifactUrl, type ArtifactRef } from "./ArtifactViewer";
 import { chatsApi } from "~/lib/api";
 
 interface WorkspaceSidebarProps {
@@ -56,7 +56,15 @@ export function WorkspaceSidebar({ chatId }: WorkspaceSidebarProps) {
             <li key={a.id}>
               <button
                 type="button"
-                onClick={() => setSelected(a as ArtifactRef)}
+                onClick={() =>
+                  setSelected({
+                    ...(a as ArtifactRef),
+                    // Resolve relative `/api/...` URLs against the
+                    // api-gateway origin; otherwise the browser
+                    // resolves them against the web worker and 404s.
+                    url: resolveArtifactUrl(a.url),
+                  })
+                }
                 className={[
                   "flex w-full items-center gap-2 px-3 py-2 text-left text-xs transition",
                   selected?.id === a.id

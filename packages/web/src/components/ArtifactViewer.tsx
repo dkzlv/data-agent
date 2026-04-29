@@ -309,13 +309,35 @@ function formatBytes(n: number): string {
 }
 
 /**
- * Try to extract an ArtifactRef from arbitrary tool output. Tools shape
- * their output in our codebase, but the LLM may also send custom shapes
- * — we hunt for the canonical fields.
+ * Try to extract an ArtifactRef from arbitrary tool output. Direct
+ * artifact returns and codemode-wrapped outputs (`{ code, result: <ref> }`)
+ * are both handled. The output may also arrive as a JSON string instead
+ * of a parsed object — we cope with that too.
  */
 export function asArtifactRef(value: unknown): ArtifactRef | null {
-  if (!value || typeof value !== "object") return null;
-  const v = value as Record<string, unknown>;
+  if (value == null) return null;
+  let v: unknown = value;
+  if (typeof v === "string") {
+    try {
+      v = JSON.parse(v);
+    } catch {
+      return null;
+    }
+  }
+  if (typeof v !== "object" || v === null) return null;
+
+  // Direct ref OR codemode wrapper. Try `value.result` first (codemode
+  // shape), then fall back to the value itself.
+  const direct = pickArtifactFields(v as Record<string, unknown>);
+  if (direct) return direct;
+  const wrapped = (v as { result?: unknown }).result;
+  if (wrapped && typeof wrapped === "object") {
+    return pickArtifactFields(wrapped as Record<string, unknown>);
+  }
+  return null;
+}
+
+function pickArtifactFields(v: Record<string, unknown>): ArtifactRef | null {
   if (
     typeof v.id === "string" &&
     typeof v.url === "string" &&
@@ -326,7 +348,7 @@ export function asArtifactRef(value: unknown): ArtifactRef | null {
   ) {
     return {
       id: v.id,
-      url: v.url,
+      url: resolveArtifactUrl(v.url),
       name: v.name,
       mime: v.mime,
       kind: v.kind,
@@ -336,4 +358,23 @@ export function asArtifactRef(value: unknown): ArtifactRef | null {
     };
   }
   return null;
+}
+
+/**
+ * Artifact URLs land here as `/api/chats/<id>/artifacts/<id>` — a
+ * relative path that, in the browser, resolves against
+ * `data-agent-web.dkzlv.workers.dev` (the web worker) rather than the
+ * api-gateway. The web worker doesn't host that route, so the fetch
+ * 404s. Resolve against `window.__ENV__.API_URL` when running in the
+ * browser; pass through unchanged for SSR / non-relative URLs.
+ *
+ * Exported for reuse from `WorkspaceSidebar` (which builds an
+ * ArtifactRef directly from the manifest list response).
+ */
+export function resolveArtifactUrl(url: string): string {
+  if (!url.startsWith("/")) return url;
+  if (typeof window === "undefined") return url;
+  const apiUrl = (window as unknown as { __ENV__?: { API_URL?: string } }).__ENV__?.API_URL;
+  if (!apiUrl) return url;
+  return `${apiUrl.replace(/\/$/, "")}${url}`;
 }

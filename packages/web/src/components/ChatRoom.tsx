@@ -200,6 +200,9 @@ function PartRender({
       </div>
     );
   }
+  if (part.type === "reasoning") {
+    return <ReasoningPart part={part} />;
+  }
   if (part.type?.startsWith("tool-")) {
     return <ToolPart part={part} />;
   }
@@ -214,35 +217,228 @@ function PartRender({
   );
 }
 
-function ToolPart({ part }: { part: UIPart }): React.ReactElement {
-  const toolName = part.toolName ?? part.type?.replace(/^tool-/, "") ?? "tool";
-  const status =
-    part.state === "output-available" ? "✓" : part.state === "output-error" ? "✗" : "…";
+/**
+ * Reasoning part — the model's internal scratchpad. Rendered as a
+ * collapsible "Thinking…" chip with the body indented and dimmed so
+ * it reads as side-channel context, not as the answer. While the
+ * stream is in flight (state="streaming"), shows a pulsing dot.
+ *
+ * Defaults to *expanded* when streaming so the user sees activity,
+ * collapses to a one-liner once done so the final answer dominates.
+ */
+function ReasoningPart({ part }: { part: UIPart }): React.ReactElement {
+  const text = part.text ?? "";
+  const streaming = part.state === "streaming";
+  // First sentence (or first 120 chars) for the collapsed preview.
+  const preview = (() => {
+    const trimmed = text.trim();
+    const firstLine = trimmed.split(/\n/, 1)[0] ?? "";
+    if (firstLine.length <= 120) return firstLine;
+    return firstLine.slice(0, 117) + "…";
+  })();
 
-  // Surface artifacts inline when the tool result carries one.
+  return (
+    <details
+      className="group my-1 text-[12px]"
+      // Auto-expand only while streaming. Once done, collapse to keep
+      // the chat dense and let the final answer dominate.
+      open={streaming}
+    >
+      <summary className="flex cursor-pointer select-none items-center gap-1.5 text-neutral-500 transition hover:text-neutral-700 dark:hover:text-neutral-300">
+        <svg
+          viewBox="0 0 16 16"
+          className="h-3 w-3 shrink-0 transition group-open:rotate-90"
+          aria-hidden
+        >
+          <path d="M5 4l4 4-4 4" stroke="currentColor" strokeWidth="1.4" fill="none" />
+        </svg>
+        <span className="font-medium uppercase tracking-wide text-[10px]">Thinking</span>
+        {streaming && (
+          <span
+            className="inline-block h-1.5 w-1.5 animate-pulse rounded-full bg-neutral-400"
+            aria-label="thinking"
+          />
+        )}
+        {!streaming && preview && (
+          <span className="truncate font-normal italic text-neutral-400 group-open:hidden">
+            {preview}
+          </span>
+        )}
+      </summary>
+      <div className="mt-1 ml-4 whitespace-pre-wrap border-l-2 border-neutral-200 pl-3 italic leading-relaxed text-neutral-500 dark:border-neutral-800 dark:text-neutral-400">
+        {text}
+      </div>
+    </details>
+  );
+}
+
+/**
+ * Tool call rendering. Codemode tool calls (`tool-codemode`) get a
+ * special treatment: we extract the user-meaningful `input.code` and
+ * `output.result` and show them as code blocks instead of dumping the
+ * raw JSON envelope, which is mostly noise.
+ */
+function ToolPart({ part }: { part: UIPart }): React.ReactElement {
+  const rawToolName = part.toolName ?? part.type?.replace(/^tool-/, "") ?? "tool";
+  const isCodemode = rawToolName === "codemode";
+  const status =
+    part.state === "output-available" ? "ok" : part.state === "output-error" ? "err" : "run";
+
+  // Codemode wraps the artifact return in `{ code, result: <artifact> }`.
+  // Try to surface an artifact from either shape.
   const artifact = part.output != null ? asArtifactRef(part.output) : null;
+
+  // Extract human-friendly views.
+  const codemodeInput = isCodemode ? extractCodemodeCode(part.input) : null;
+  const codemodeOutput = isCodemode ? extractCodemodeResult(part.output) : null;
+
+  const summaryLabel = isCodemode ? "ran code" : rawToolName;
+  const statusBadgeCls = {
+    ok: "bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300",
+    err: "bg-red-100 text-red-700 dark:bg-red-900/40 dark:text-red-300",
+    run: "bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-300",
+  }[status];
+  const statusLabel = { ok: "✓", err: "✗", run: "…" }[status];
 
   return (
     <div className="my-1">
       {artifact ? <ArtifactViewer ref={artifact} /> : null}
-      <details className="rounded border border-neutral-300 bg-white/40 px-2 py-1 text-xs dark:border-neutral-700 dark:bg-black/20">
-        <summary className="cursor-pointer select-none font-mono">
-          {status} {toolName}
+      <details className="group rounded-lg border border-neutral-200 bg-white/60 text-xs dark:border-neutral-800 dark:bg-black/20">
+        <summary className="flex cursor-pointer select-none items-center gap-2 px-2.5 py-1.5">
+          <span
+            className={[
+              "inline-flex h-4 w-4 items-center justify-center rounded text-[10px] font-bold leading-none",
+              statusBadgeCls,
+            ].join(" ")}
+            aria-label={status}
+          >
+            {statusLabel}
+          </span>
+          <span className="font-medium text-neutral-700 dark:text-neutral-300">{summaryLabel}</span>
+          {isCodemode && codemodeInput && (
+            <span className="ml-1 truncate font-mono text-[10px] text-neutral-500">
+              {summarizeCode(codemodeInput)}
+            </span>
+          )}
+          <svg
+            viewBox="0 0 16 16"
+            className="ml-auto h-3 w-3 shrink-0 text-neutral-400 transition group-open:rotate-90"
+            aria-hidden
+          >
+            <path d="M5 4l4 4-4 4" stroke="currentColor" strokeWidth="1.4" fill="none" />
+          </svg>
         </summary>
-        {part.input != null && (
-          <pre className="mt-1 max-h-72 overflow-auto whitespace-pre-wrap break-words text-[10px] leading-snug">
-            {safeJsonStringify(part.input)}
-          </pre>
-        )}
-        {part.output != null && (
-          <pre className="mt-1 max-h-72 overflow-auto whitespace-pre-wrap break-words border-t border-neutral-300 pt-1 text-[10px] leading-snug dark:border-neutral-700">
-            {safeJsonStringify(part.output)}
-          </pre>
-        )}
-        {part.errorText && <p className="mt-1 text-red-600 dark:text-red-400">{part.errorText}</p>}
+
+        <div className="space-y-2 border-t border-neutral-200 px-2.5 py-2 dark:border-neutral-800">
+          {/* Codemode: dedicated code + result blocks */}
+          {isCodemode && codemodeInput && (
+            <div>
+              <div className="mb-0.5 text-[10px] font-semibold uppercase tracking-wide text-neutral-500">
+                Code
+              </div>
+              <pre className="max-h-72 overflow-auto rounded bg-neutral-50 px-2 py-1.5 font-mono text-[11px] leading-snug dark:bg-neutral-950">
+                {codemodeInput}
+              </pre>
+            </div>
+          )}
+          {isCodemode && codemodeOutput !== null && (
+            <div>
+              <div className="mb-0.5 text-[10px] font-semibold uppercase tracking-wide text-neutral-500">
+                Result
+              </div>
+              <pre className="max-h-72 overflow-auto rounded bg-neutral-50 px-2 py-1.5 font-mono text-[11px] leading-snug dark:bg-neutral-950">
+                {codemodeOutput}
+              </pre>
+            </div>
+          )}
+
+          {/* Non-codemode: original input/output JSON dump */}
+          {!isCodemode && part.input != null && (
+            <div>
+              <div className="mb-0.5 text-[10px] font-semibold uppercase tracking-wide text-neutral-500">
+                Input
+              </div>
+              <pre className="max-h-72 overflow-auto whitespace-pre-wrap break-words rounded bg-neutral-50 px-2 py-1.5 font-mono text-[11px] leading-snug dark:bg-neutral-950">
+                {safeJsonStringify(part.input)}
+              </pre>
+            </div>
+          )}
+          {!isCodemode && part.output != null && (
+            <div>
+              <div className="mb-0.5 text-[10px] font-semibold uppercase tracking-wide text-neutral-500">
+                Output
+              </div>
+              <pre className="max-h-72 overflow-auto whitespace-pre-wrap break-words rounded bg-neutral-50 px-2 py-1.5 font-mono text-[11px] leading-snug dark:bg-neutral-950">
+                {safeJsonStringify(part.output)}
+              </pre>
+            </div>
+          )}
+          {part.errorText && <p className="text-red-600 dark:text-red-400">{part.errorText}</p>}
+        </div>
       </details>
     </div>
   );
+}
+
+/**
+ * Codemode input is `{ code: "<source>" }` (already a stringified
+ * object in some shapes — handle both). Returns the bare source.
+ */
+function extractCodemodeCode(input: unknown): string | null {
+  if (input == null) return null;
+  let obj: unknown = input;
+  if (typeof obj === "string") {
+    const raw = obj;
+    try {
+      obj = JSON.parse(raw);
+    } catch {
+      // Not JSON — assume the LLM already gave us bare source.
+      return raw;
+    }
+  }
+  if (typeof obj === "object" && obj !== null) {
+    const code = (obj as { code?: unknown }).code;
+    if (typeof code === "string") return code;
+  }
+  return null;
+}
+
+/**
+ * Codemode output is `{ code, result: <whatever the function returned> }`.
+ * Strip the echoed `code` field and pretty-print just the result.
+ */
+function extractCodemodeResult(output: unknown): string | null {
+  if (output == null) return null;
+  let obj: unknown = output;
+  if (typeof obj === "string") {
+    const raw = obj;
+    try {
+      obj = JSON.parse(raw);
+    } catch {
+      return raw;
+    }
+  }
+  if (typeof obj === "object" && obj !== null) {
+    const result = (obj as { result?: unknown }).result;
+    if (result === undefined) return safeJsonStringify(obj);
+    if (typeof result === "string") return result;
+    return safeJsonStringify(result);
+  }
+  return safeJsonStringify(obj);
+}
+
+/** One-liner preview of a code blob for the collapsed summary. */
+function summarizeCode(code: string): string {
+  // Strip the standard `async () => {` wrapper if present, then take
+  // the first non-empty line of the body so the user sees what the
+  // call actually does (e.g. "await db.introspect()").
+  const stripped = code
+    .replace(/^\s*async\s*\(\s*\)\s*=>\s*\{?\s*/i, "")
+    .replace(/\}\s*$/, "")
+    .trim();
+  const firstLine = stripped.split(/\n/).find((l) => l.trim().length > 0) ?? stripped;
+  const compact = firstLine.replace(/\s+/g, " ").trim();
+  return compact.length > 80 ? compact.slice(0, 77) + "…" : compact;
 }
 
 function safeJsonStringify(v: unknown): string {
