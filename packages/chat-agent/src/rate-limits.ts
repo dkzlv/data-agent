@@ -87,56 +87,38 @@ export class RateLimitError extends Error {
 }
 
 /**
- * Check all configured windows in a single round trip. Returns the
- * first failure, or `{ ok: true }` if everything is within budget.
+ * Pure policy-evaluator. Walks each configured window and queries the
+ * provided count function for the number of matching events. The
+ * first window over budget short-circuits and returns the failure.
+ *
+ * Split from `checkRateLimits` so we can unit-test the policy logic
+ * without a Postgres connection — the test injects a stubbed
+ * `countEvents`.
  */
-export async function checkRateLimits(
-  db: Database,
-  scope: RateLimitScope
+export async function evaluatePolicy(
+  scope: RateLimitScope,
+  countEvents: (
+    key: "chat" | "user" | "tenant",
+    window: RateLimitWindow,
+    scope: RateLimitScope
+  ) => Promise<number>,
+  policy: {
+    perChatPerDay: RateLimitWindow;
+    perUserPerHour: RateLimitWindow;
+    perTenantPerDay: RateLimitWindow;
+  } = DEFAULT_POLICY
 ): Promise<RateLimitDecision> {
-  const now = Date.now();
-
-  // Build all the count queries. We could compose them into one CTE
-  // for one-roundtrip semantics; keeping three small queries is
-  // simpler and reads cleanly. They're indexed: audit_log_tenant_created_idx
-  // covers tenant+created_at, and audit_log_chat_idx covers chatId.
   const policies: Array<{
     window: RateLimitWindow;
-    scope: typeof scope;
     key: "chat" | "user" | "tenant";
   }> = [];
 
-  if (scope.chatId) {
-    policies.push({ window: DEFAULT_POLICY.perChatPerDay, scope, key: "chat" });
-  }
-  if (scope.userId) {
-    policies.push({ window: DEFAULT_POLICY.perUserPerHour, scope, key: "user" });
-  }
-  policies.push({ window: DEFAULT_POLICY.perTenantPerDay, scope, key: "tenant" });
+  if (scope.chatId) policies.push({ window: policy.perChatPerDay, key: "chat" });
+  if (scope.userId) policies.push({ window: policy.perUserPerHour, key: "user" });
+  policies.push({ window: policy.perTenantPerDay, key: "tenant" });
 
   for (const p of policies) {
-    const since = new Date(now - p.window.windowMs);
-    const conds = [
-      eq(schema.auditLog.action, p.window.action),
-      gte(schema.auditLog.createdAt, since),
-    ];
-    if (p.key === "chat" && p.scope.chatId) {
-      conds.push(eq(schema.auditLog.chatId, p.scope.chatId));
-    } else if (p.key === "user" && p.scope.userId) {
-      conds.push(
-        eq(schema.auditLog.tenantId, p.scope.tenantId),
-        eq(schema.auditLog.userId, p.scope.userId)
-      );
-    } else if (p.key === "tenant") {
-      conds.push(eq(schema.auditLog.tenantId, p.scope.tenantId));
-    }
-
-    const [row] = await db
-      .select({ n: sql<number>`count(*)::int` })
-      .from(schema.auditLog)
-      .where(and(...conds));
-
-    const current = row?.n ?? 0;
+    const current = await countEvents(p.key, p.window, scope);
     if (current >= p.window.max) {
       return {
         ok: false,
@@ -149,4 +131,37 @@ export async function checkRateLimits(
   }
 
   return { ok: true };
+}
+
+/**
+ * Check all configured windows against the live `audit_log` table.
+ * Returns the first failure, or `{ ok: true }` if everything is within
+ * budget. Three small queries (indexed by `audit_log_tenant_created_idx`
+ * / `audit_log_chat_idx`) instead of one CTE because the readability
+ * is worth more than the round-trip; we may revisit if pg latency
+ * becomes a hot path.
+ */
+export async function checkRateLimits(
+  db: Database,
+  scope: RateLimitScope
+): Promise<RateLimitDecision> {
+  return evaluatePolicy(scope, async (key, window, s) => {
+    const since = new Date(Date.now() - window.windowMs);
+    const conds = [
+      eq(schema.auditLog.action, window.action),
+      gte(schema.auditLog.createdAt, since),
+    ];
+    if (key === "chat" && s.chatId) {
+      conds.push(eq(schema.auditLog.chatId, s.chatId));
+    } else if (key === "user" && s.userId) {
+      conds.push(eq(schema.auditLog.tenantId, s.tenantId), eq(schema.auditLog.userId, s.userId));
+    } else if (key === "tenant") {
+      conds.push(eq(schema.auditLog.tenantId, s.tenantId));
+    }
+    const [row] = await db
+      .select({ n: sql<number>`count(*)::int` })
+      .from(schema.auditLog)
+      .where(and(...conds));
+    return row?.n ?? 0;
+  });
 }

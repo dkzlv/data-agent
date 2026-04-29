@@ -545,6 +545,32 @@ export class ChatAgent extends Think<Env> {
     return { ok: true, removed: Array.isArray(before) ? before.length : 0 };
   }
 
+  /**
+   * Debug RPC — return the current rate-limit usage for this chat
+   * (947c38). Useful from a script when a user reports being blocked
+   * unexpectedly. Returns a structured per-window snapshot of
+   * (current, max, windowMs, code) and the overall decision.
+   */
+  @callable()
+  async debugRateLimits(): Promise<{
+    ok: boolean;
+    decision: { ok: boolean; code?: string; current?: number; max?: number; windowMs?: number };
+    tenantId: string | null;
+  }> {
+    const tenantId = this._cachedChatContext?.tenantId;
+    if (!tenantId) {
+      // No chat context resolved yet — surface the gap so the caller
+      // knows why we can't evaluate.
+      return {
+        ok: false,
+        decision: { ok: false, code: "no_chat_context" },
+        tenantId: null,
+      };
+    }
+    const decision = await this.checkRateLimits(tenantId);
+    return { ok: decision.ok, decision, tenantId };
+  }
+
   @callable()
   async debugDump(opts?: { limit?: number }): Promise<{
     chatId: string;
