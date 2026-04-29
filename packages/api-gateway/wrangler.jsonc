@@ -18,7 +18,12 @@
     "APP_URL": "https://data-agent-web.dkzlv.workers.dev",
     "API_URL": "https://data-agent-api-gateway.dkzlv.workers.dev",
     "COOKIE_DOMAIN": "data-agent-api-gateway.dkzlv.workers.dev",
-    "CF_ACCOUNT_ID": "2f7029a7ef2671db090d9304f595c42d"
+    "CF_ACCOUNT_ID": "2f7029a7ef2671db090d9304f595c42d",
+    // Closed-alpha allow-list for magic-link signups. Comma-separated
+    // domain suffixes (no `@`). Set to `*` to disable the gate.
+    // Mismatched addresses get a silent no-op so attackers can't
+    // enumerate which domains are permitted.
+    "ALLOWED_EMAIL_DOMAINS": "indent.com"
   },
 
   "secrets_store_secrets": [
@@ -55,6 +60,21 @@
     {
       "binding": "CHAT_AGENT",
       "service": "data-agent-chat-agent"
+    }
+  ],
+
+  // Cloudflare Email Sending binding (open beta product, distinct
+  // from Email Routing's send_email). Sender domain `dkzlv.com` is
+  // already onboarded — `wrangler email sending list` confirms
+  // `enabled: yes`. `remote: true` is required for the binding to
+  // hit the live Email Sending product (without it, the binding
+  // talks to the older Email Routing send pathway, which only
+  // delivers to verified destinations).
+  "send_email": [
+    {
+      "name": "EMAIL",
+      "remote": true,
+      "allowed_sender_addresses": ["robot@data-agent.dkzlv.com"]
     }
   ]
 

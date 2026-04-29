@@ -19,9 +19,16 @@ function LoginRoute() {
     setStatus("sending");
     setErrorMsg("");
     try {
+      // The magic-link verify handler lives on the api-gateway and
+      // redirects to whatever URL we hand it as `callbackURL`. We need
+      // an *absolute* URL pointing back at the web app — a relative
+      // path resolves against the api-gateway's baseURL and ends up at
+      // `data-agent-api-gateway.dkzlv.workers.dev/app`, which 404s
+      // because the web routes live on a different worker.
+      const callbackURL = typeof window !== "undefined" ? `${window.location.origin}/app` : "/app";
       const res = await authClient.signIn.magicLink({
         email: email.trim(),
-        callbackURL: "/app",
+        callbackURL,
       });
       if (res.error) {
         setStatus("error");

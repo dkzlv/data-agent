@@ -141,6 +141,31 @@ used to join a chat without a fresh token from the gateway.
 - The chat-agent worker has no `/health` or other public endpoints —
   every route either requires a token or returns 404.
 
+### T6. Sign-up domain allow-list (closed alpha)
+
+`ALLOWED_EMAIL_DOMAINS` (comma-separated suffixes, default
+`indent.com`) gates **delivery** of magic-link sign-ins. The
+`sendMagicLink` callback short-circuits to a no-op for any address
+whose domain isn't on the list. Three properties of this gate:
+
+1. **No enumeration.** The signup endpoint always returns
+   `{ ok: true }`/200 — the same UX whether the address is allowed
+   or silently dropped. An attacker probing the form cannot tell
+   permitted domains from blocked ones.
+2. **Defense-in-depth, not the only line.** This is a UX gate, not
+   an authorization gate. The real authorization happens at session
+   validation: even if an attacker somehow gets a magic link
+   delivered (e.g. because the list later expanded), tenant
+   membership and chat membership checks still run on every request
+   (T4).
+3. **Audit-aware.** Blocked attempts are logged with **domain only**
+   (never the local-part) so we can detect spray attempts in
+   observability without leaking PII.
+
+Set to `*` to disable the gate (open beta). Stored as a `var` (not a
+secret) since the value isn't sensitive — the gate's safety relies on
+the silent-drop behavior, not the secrecy of the list.
+
 ## Auditable resource caps
 
 | Limit                        | Value                  | Enforced by                         |

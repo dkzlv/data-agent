@@ -14,6 +14,14 @@ export interface Env {
   API_URL: string;
   COOKIE_DOMAIN: string;
   CF_ACCOUNT_ID: string;
+  /**
+   * Comma-separated list of email-domain suffixes (no `@`) allowed
+   * to receive magic-link sign-ins. Anything else is silently
+   * dropped from `sendMagicLink` so attackers can't enumerate which
+   * domains are permitted. Use `*` to disable the gate.
+   * Defaults to `indent.com` if unset.
+   */
+  ALLOWED_EMAIL_DOMAINS?: string;
 
   // Secrets
   CONTROL_PLANE_DB_URL: SecretBinding;
@@ -27,6 +35,23 @@ export interface Env {
 
   // Service binding to chat-agent worker
   CHAT_AGENT: Fetcher;
+
+  /**
+   * Cloudflare Email Sending binding. Configured with `remote: true`
+   * in wrangler.jsonc so it routes through the new Email Sending
+   * product (not the older Email Routing send pathway). Sender
+   * domain (`dkzlv.com`) must be onboarded via dash → Email Sending.
+   */
+  EMAIL: {
+    send(message: {
+      to: string | string[];
+      from: string | { address: string; name?: string };
+      subject: string;
+      text?: string;
+      html?: string;
+      replyTo?: string | { address: string; name?: string };
+    }): Promise<{ messageId?: string }>;
+  };
 }
 
 const cache = new WeakMap<object, Map<string, string>>();
