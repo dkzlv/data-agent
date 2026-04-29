@@ -185,21 +185,59 @@ Key invariants:
 
 ### web
 
+UI is shadcn/ui (style="new-york", base=neutral) on Tailwind v4.
+Tokens live in `src/styles.css` as CSS variables (light + `.dark`
+override) and are exposed to Tailwind via `@theme inline`. Use the
+shadcn primitives in `src/components/ui/*` (Button, Input, Textarea,
+Label, Dialog, Sheet, DropdownMenu, Select, Separator, Badge, Alert,
+Card, Skeleton, ScrollArea, Tooltip) — do NOT hand-roll new
+buttons/inputs. The `cn()` helper from `~/lib/utils` is the canonical
+class-name composer.
+
 - `src/components/ChatRoom.tsx` — main chat UI. `useAgentChat` from
   `@cloudflare/ai-chat/react` over WS. Renders codemode tool calls
   with Code/Result blocks, reasoning chips, presence badges, error
-  banner via `toFriendlyError`.
+  banner via `toFriendlyError`. Tracks `wsOpen` + `hasInitialSync`
+  (set on `cf_agent_messages` event) to gate skeleton vs real list.
+  Mobile (sub-md) workspace lives in a Sheet via
+  `WorkspaceSidebarBody`; desktop uses the permanent
+  `WorkspaceSidebar` (md:flex w-72).
 - `src/components/ArtifactViewer.tsx` — Vega-embed renderer + image
   fallback. Exports `resolveArtifactUrl` (prepends API URL to
-  relative artifact paths).
-- `src/components/WorkspaceSidebar.tsx` — chat list + artifact
-  manifest sidebar.
+  relative artifact paths). Has `fullWidth` prop: when true, drops
+  the framing card and rewrites `width` to `"container"` for the
+  vega spec — used inside the dialog. Theme-aware via
+  `useTheme()` (re-renders on light/dark switch).
+- `src/components/WorkspaceSidebar.tsx` — sidebar list of artifacts.
+  Click opens an `ArtifactViewer fullWidth` inside a centered Dialog
+  (max-w 900px) — earlier versions rendered a mini ArtifactViewer
+  inside the 288px column which clipped chart titles. Exports
+  `WorkspaceSidebarBody` for the mobile Sheet.
+- `src/components/list-skeleton.tsx` — `ListSkeleton` reusable
+  loading placeholder for divider lists (chats, connections,
+  workspace). Pseudo-random row widths so the placeholder breathes.
+- `src/components/theme-provider.tsx` — system / light / dark with
+  manual override; stored in localStorage as `theme`. The
+  `themeBootScript` constant is inlined into `<head>` from
+  `__root.tsx` so the right `class="dark"` lands before Tailwind
+  paints (no flash).
+- `src/components/theme-toggle.tsx` — header dropdown showing
+  resolved icon (sun/moon) + radio of system/light/dark.
+- `src/components/ui/*` — shadcn primitives. Components are project
+  source (committed); add new ones via `pnpm dlx shadcn add <name>`
+  or by hand following the existing conventions. `components.json`
+  documents the install config (alias `~/components/ui`).
 - `src/lib/agent-error.ts` — `toFriendlyError` translates known
   error codes to banner shape; suppresses AbortError.
 - `src/lib/api.ts` — typed fetch wrapper.
 - `src/lib/auth-client.ts` — Better Auth client.
+- `src/lib/utils.ts` — `cn()` (clsx + twMerge).
 - `src/routes/__root.tsx` — server-side `__ENV__` injection
-  (API_URL).
+  (API_URL). Mounts `ThemeProvider` + `TooltipProvider`. Inlines
+  the theme boot script before React hydrates.
+- `src/routes/app.tsx` — app shell. Mobile hamburger opens a left
+  Sheet with the nav; desktop shows nav inline. ThemeToggle in
+  header.
 - `src/routes/login.tsx` — magic link form. Uses absolute
   `callbackURL: "${origin}/app"` (relative resolves against API).
 

@@ -1,6 +1,7 @@
 /**
  * ArtifactViewer — renders an artifact returned by `chart.*` or
- * `artifact.*` tool calls. Inline in the chat message stream.
+ * `artifact.*` tool calls. Used inline in chat messages and inside
+ * the workspace dialog (full-width).
  *
  * Behaviour by kind/mime:
  *
@@ -19,6 +20,10 @@ import { useEffect, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import vegaEmbed from "vega-embed";
+import { BarChart3, FileText, Table as TableIcon, ExternalLink } from "lucide-react";
+import { Skeleton } from "~/components/ui/skeleton";
+import { useTheme } from "~/components/theme-provider";
+import { cn } from "~/lib/utils";
 
 export interface ArtifactRef {
   id: string;
@@ -31,23 +36,41 @@ export interface ArtifactRef {
   chartType?: string;
 }
 
-export function ArtifactViewer({ ref: artifact }: { ref: ArtifactRef }) {
+export function ArtifactViewer({
+  ref: artifact,
+  /**
+   * When true, drop the framing card (border + size cap) — used in
+   * the dialog where the chrome is owned by the dialog itself. The
+   * default keeps the card so the inline-in-chat rendering still
+   * has a visible boundary.
+   */
+  fullWidth = false,
+}: {
+  ref: ArtifactRef;
+  fullWidth?: boolean;
+}) {
+  if (fullWidth) {
+    // Dialog rendering: no surrounding card, no header — the dialog
+    // chrome already supplies the title and close button.
+    return <ArtifactBody artifact={artifact} fullWidth />;
+  }
   return (
-    <div className="my-2 overflow-hidden rounded-lg border border-neutral-300 bg-white text-xs shadow-sm dark:border-neutral-700 dark:bg-neutral-900">
-      <div className="flex items-center justify-between gap-2 border-b border-neutral-200 px-3 py-1.5 dark:border-neutral-800">
+    <div className="my-2 overflow-hidden rounded-lg border border-border bg-card text-xs shadow-sm">
+      <div className="flex items-center justify-between gap-2 border-b border-border px-3 py-1.5">
         <div className="flex min-w-0 items-center gap-2">
           <KindIcon kind={artifact.kind} />
           <span className="truncate font-medium">{artifact.name}</span>
-          <span className="text-[10px] text-neutral-500">{formatBytes(artifact.size)}</span>
+          <span className="text-[10px] text-muted-foreground">{formatBytes(artifact.size)}</span>
         </div>
         <a
           href={artifact.url}
           target="_blank"
           rel="noopener noreferrer"
-          className="text-[11px] text-neutral-500 underline-offset-2 hover:text-neutral-900 hover:underline dark:hover:text-neutral-100"
+          className="inline-flex items-center gap-1 text-[11px] text-muted-foreground underline-offset-2 hover:text-foreground hover:underline"
           title="Open in a new tab"
         >
           open
+          <ExternalLink className="h-3 w-3" />
         </a>
       </div>
       <ArtifactBody artifact={artifact} />
@@ -56,65 +79,19 @@ export function ArtifactViewer({ ref: artifact }: { ref: ArtifactRef }) {
 }
 
 function KindIcon({ kind }: { kind: ArtifactRef["kind"] }) {
-  // Tiny inline SVG monograms — no dep on an icon library, no extra request.
-  const common = "h-3.5 w-3.5 shrink-0 text-neutral-500";
-  if (kind === "chart") {
-    return (
-      <svg viewBox="0 0 16 16" className={common} aria-hidden>
-        <path
-          d="M2 13V3M2 13h12"
-          stroke="currentColor"
-          strokeWidth="1.4"
-          fill="none"
-          strokeLinecap="round"
-        />
-        <path
-          d="M5 11V8M8 11V5M11 11V7"
-          stroke="currentColor"
-          strokeWidth="1.4"
-          fill="none"
-          strokeLinecap="round"
-        />
-      </svg>
-    );
-  }
-  if (kind === "table") {
-    return (
-      <svg viewBox="0 0 16 16" className={common} aria-hidden>
-        <rect
-          x="2.5"
-          y="2.5"
-          width="11"
-          height="11"
-          stroke="currentColor"
-          strokeWidth="1.2"
-          fill="none"
-        />
-        <path d="M2.5 6h11M6 2.5v11" stroke="currentColor" strokeWidth="1" fill="none" />
-      </svg>
-    );
-  }
-  return (
-    <svg viewBox="0 0 16 16" className={common} aria-hidden>
-      <path
-        d="M3 1.5h7l3 3v10h-10z"
-        stroke="currentColor"
-        strokeWidth="1.2"
-        fill="none"
-        strokeLinejoin="round"
-      />
-      <path
-        d="M10 1.5v3.5h3"
-        stroke="currentColor"
-        strokeWidth="1.2"
-        fill="none"
-        strokeLinejoin="round"
-      />
-    </svg>
-  );
+  const cls = "h-3.5 w-3.5 shrink-0 text-muted-foreground";
+  if (kind === "chart") return <BarChart3 className={cls} aria-hidden />;
+  if (kind === "table") return <TableIcon className={cls} aria-hidden />;
+  return <FileText className={cls} aria-hidden />;
 }
 
-function ArtifactBody({ artifact }: { artifact: ArtifactRef }) {
+function ArtifactBody({
+  artifact,
+  fullWidth = false,
+}: {
+  artifact: ArtifactRef;
+  fullWidth?: boolean;
+}) {
   const [content, setContent] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
@@ -142,51 +119,104 @@ function ArtifactBody({ artifact }: { artifact: ArtifactRef }) {
 
   if (error) {
     return (
-      <div className="px-3 py-2 text-red-600 dark:text-red-400">
-        Failed to load artifact: {error}
-      </div>
+      <div className="px-3 py-2 text-xs text-destructive">Failed to load artifact: {error}</div>
     );
   }
   if (content == null) {
-    return <div className="px-3 py-2 text-neutral-500">Loading…</div>;
+    // Skeleton sized to roughly the kind's expected footprint so the
+    // layout doesn't jump when the body resolves.
+    return <ArtifactBodySkeleton kind={artifact.kind} fullWidth={fullWidth} />;
   }
   if (artifact.mime.includes("vegalite") || artifact.kind === "chart") {
-    return <ChartBody specJson={content} />;
+    return <ChartBody specJson={content} fullWidth={fullWidth} />;
   }
   if (artifact.mime === "text/markdown") {
     return (
-      <div className="markdown-body break-words px-3 py-2 leading-relaxed">
+      <div
+        className={cn("markdown-body break-words leading-relaxed", fullWidth ? "" : "px-3 py-2")}
+      >
         <ReactMarkdown remarkPlugins={[remarkGfm]}>{content}</ReactMarkdown>
       </div>
     );
   }
   if (artifact.mime === "text/csv" || artifact.mime === "text/tab-separated-values") {
-    return <CsvBody content={content} delimiter={artifact.mime.includes("tab") ? "\t" : ","} />;
+    return (
+      <CsvBody
+        content={content}
+        delimiter={artifact.mime.includes("tab") ? "\t" : ","}
+        fullWidth={fullWidth}
+      />
+    );
   }
   if (artifact.mime === "application/json") {
-    return <JsonBody content={content} />;
+    return <JsonBody content={content} fullWidth={fullWidth} />;
   }
   return (
-    <pre className="max-h-72 overflow-auto whitespace-pre-wrap break-words bg-neutral-50 px-3 py-2 text-[11px] dark:bg-neutral-950">
+    <pre
+      className={cn(
+        "overflow-auto whitespace-pre-wrap break-words bg-muted/40 text-[11px]",
+        fullWidth ? "" : "max-h-72 px-3 py-2"
+      )}
+    >
       {content}
     </pre>
   );
 }
 
-function ChartBody({ specJson }: { specJson: string }) {
+function ArtifactBodySkeleton({
+  kind,
+  fullWidth,
+}: {
+  kind: ArtifactRef["kind"];
+  fullWidth: boolean;
+}) {
+  if (kind === "chart") {
+    return (
+      <div className={cn("space-y-2", fullWidth ? "p-2" : "p-3")}>
+        <Skeleton className="h-3 w-24" />
+        <Skeleton className={cn(fullWidth ? "h-72" : "h-48", "w-full")} />
+      </div>
+    );
+  }
+  if (kind === "table") {
+    return (
+      <div className={cn("space-y-1.5", fullWidth ? "p-2" : "px-3 py-2")}>
+        {Array.from({ length: 5 }).map((_, i) => (
+          <Skeleton key={i} className="h-4 w-full" />
+        ))}
+      </div>
+    );
+  }
+  return (
+    <div className={cn("space-y-1.5", fullWidth ? "p-2" : "px-3 py-2")}>
+      <Skeleton className="h-3 w-3/4" />
+      <Skeleton className="h-3 w-5/6" />
+      <Skeleton className="h-3 w-2/3" />
+    </div>
+  );
+}
+
+function ChartBody({ specJson, fullWidth = false }: { specJson: string; fullWidth?: boolean }) {
   const ref = useRef<HTMLDivElement | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const { resolved } = useTheme();
 
   useEffect(() => {
     if (!ref.current) return;
     let view: { finalize: () => void } | null = null;
     let cancelled = false;
     try {
-      const spec = JSON.parse(specJson);
-      vegaEmbed(ref.current, spec, {
+      const spec = JSON.parse(specJson) as Record<string, unknown>;
+      // When the chart is rendered full-width (dialog), drop the
+      // explicit `width` from the spec so vega-embed expands to the
+      // container. If the LLM hard-codes width=300 in a sidebar-
+      // sized chart and we then show it in the dialog, the chart
+      // would otherwise stay narrow with a sea of empty space.
+      const renderSpec = fullWidth ? { ...spec, width: "container" } : spec;
+      vegaEmbed(ref.current, renderSpec, {
         actions: { export: true, source: false, compiled: false, editor: false },
         renderer: "canvas",
-        config: detectVegaTheme(),
+        config: vegaThemeConfig(resolved === "dark"),
       })
         .then((res) => {
           if (cancelled) {
@@ -205,25 +235,23 @@ function ChartBody({ specJson }: { specJson: string }) {
       cancelled = true;
       view?.finalize();
     };
-  }, [specJson]);
+    // resolved is included so the chart re-renders on theme switch.
+  }, [specJson, resolved, fullWidth]);
 
   return (
-    <div className="px-3 py-3">
-      {error && <p className="text-[11px] text-red-600 dark:text-red-400">Render error: {error}</p>}
+    <div className={cn(fullWidth ? "py-2" : "px-3 py-3")}>
+      {error && <p className="text-[11px] text-destructive">Render error: {error}</p>}
       <div ref={ref} className="w-full overflow-x-auto" />
     </div>
   );
 }
 
-function detectVegaTheme(): Record<string, unknown> {
-  if (typeof window === "undefined") return {};
-  const dark = window.matchMedia?.("(prefers-color-scheme: dark)")?.matches;
+function vegaThemeConfig(dark: boolean): Record<string, unknown> {
   if (!dark) return {};
   // Minimal dark theme — matches the chat bubble background.
   return {
     background: null,
     view: { stroke: "transparent" },
-    style: {},
     axis: {
       domainColor: "#444",
       gridColor: "#2a2a2a",
@@ -239,26 +267,34 @@ function detectVegaTheme(): Record<string, unknown> {
   };
 }
 
-function CsvBody({ content, delimiter }: { content: string; delimiter: string }) {
+function CsvBody({
+  content,
+  delimiter,
+  fullWidth = false,
+}: {
+  content: string;
+  delimiter: string;
+  fullWidth?: boolean;
+}) {
   // Tiny CSV split — no quote-handling for embedded delimiters. Good
   // enough for preview; if the LLM emits weird CSV we just degrade to
   // raw text via the catch-all below.
   const rows = content.split(/\r?\n/).slice(0, 51);
   const hasContent = rows.some((r) => r.length > 0);
   if (!hasContent) {
-    return <div className="px-3 py-2 text-neutral-500">empty CSV</div>;
+    return <div className="px-3 py-2 text-muted-foreground">empty CSV</div>;
   }
   const parsed = rows.map((r) => r.split(delimiter));
   const [header, ...body] = parsed;
   return (
-    <div className="max-h-96 overflow-auto px-3 py-2">
+    <div className={cn("overflow-auto", fullWidth ? "max-h-[70vh]" : "max-h-96 px-3 py-2")}>
       <table className="w-full border-collapse text-[11px]">
         <thead>
           <tr>
             {(header ?? []).map((h, i) => (
               <th
                 key={i}
-                className="border-b border-neutral-300 bg-neutral-50 px-2 py-1 text-left font-medium dark:border-neutral-700 dark:bg-neutral-900"
+                className="sticky top-0 border-b border-border bg-muted/60 px-2 py-1 text-left font-medium"
               >
                 {h}
               </th>
@@ -267,12 +303,9 @@ function CsvBody({ content, delimiter }: { content: string; delimiter: string })
         </thead>
         <tbody>
           {body.slice(0, 50).map((row, i) => (
-            <tr key={i} className="even:bg-neutral-50/50 dark:even:bg-neutral-900/40">
+            <tr key={i} className="even:bg-muted/30">
               {row.map((cell, j) => (
-                <td
-                  key={j}
-                  className="border-b border-neutral-200 px-2 py-1 dark:border-neutral-800"
-                >
+                <td key={j} className="border-b border-border px-2 py-1">
                   {cell}
                 </td>
               ))}
@@ -281,13 +314,13 @@ function CsvBody({ content, delimiter }: { content: string; delimiter: string })
         </tbody>
       </table>
       {body.length > 50 && (
-        <p className="mt-1 text-[10px] text-neutral-500">+ {body.length - 50} more rows</p>
+        <p className="mt-1 text-[10px] text-muted-foreground">+ {body.length - 50} more rows</p>
       )}
     </div>
   );
 }
 
-function JsonBody({ content }: { content: string }) {
+function JsonBody({ content, fullWidth = false }: { content: string; fullWidth?: boolean }) {
   let formatted = content;
   try {
     formatted = JSON.stringify(JSON.parse(content), null, 2);
@@ -295,7 +328,12 @@ function JsonBody({ content }: { content: string }) {
     // leave as-is
   }
   return (
-    <pre className="max-h-72 overflow-auto whitespace-pre-wrap break-words bg-neutral-50 px-3 py-2 text-[11px] dark:bg-neutral-950">
+    <pre
+      className={cn(
+        "overflow-auto whitespace-pre-wrap break-words bg-muted/40 text-[11px]",
+        fullWidth ? "max-h-[70vh] p-3" : "max-h-72 px-3 py-2"
+      )}
+    >
       {formatted}
     </pre>
   );

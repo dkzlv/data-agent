@@ -2,6 +2,8 @@ import { HeadContent, Outlet, Scripts, createRootRoute } from "@tanstack/react-r
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { createServerFn } from "@tanstack/react-start";
 import { useState, type ReactNode } from "react";
+import { ThemeProvider, themeBootScript } from "~/components/theme-provider";
+import { TooltipProvider } from "~/components/ui/tooltip";
 import "../styles.css";
 
 /**
@@ -46,9 +48,13 @@ function RootComponent() {
 
   return (
     <RootDocument env={env}>
-      <QueryClientProvider client={queryClient}>
-        <Outlet />
-      </QueryClientProvider>
+      <ThemeProvider>
+        <QueryClientProvider client={queryClient}>
+          <TooltipProvider delayDuration={150}>
+            <Outlet />
+          </TooltipProvider>
+        </QueryClientProvider>
+      </ThemeProvider>
     </RootDocument>
   );
 }
@@ -56,7 +62,10 @@ function RootComponent() {
 function RootDocument({ children, env }: { children: ReactNode; env: { API_URL: string } }) {
   // We inject env via a small script before any other JS runs so client
   // modules can read window.__ENV__ during their import-time initialization.
-  const inline = `window.__ENV__=${JSON.stringify(env)};`;
+  // We *also* run the theme-boot script here so the right `class="dark"`
+  // is set before Tailwind paints — otherwise the page flashes light
+  // before React hydrates and the provider applies the stored theme.
+  const inline = `window.__ENV__=${JSON.stringify(env)};${themeBootScript}`;
   return (
     <html lang="en">
       <head>

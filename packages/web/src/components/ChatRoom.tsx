@@ -7,10 +7,12 @@
  * persisted server-side via Think; we get streamed text + tool calls +
  * resumable streaming for free.
  *
- * The composer + message list are intentionally minimal — the goal of
- * subtask fa583c is correctness + plumbing, not bespoke design polish.
- * Future tasks add: keyboard shortcuts, retry, tool-call drill-down,
- * multi-user typing indicators, and the artifact viewer (`a4e12f`).
+ * UI primitives are shadcn (Button, Textarea, Badge, Sheet, ...) so
+ * the chat respects the global theme tokens. The composer + message
+ * list shells get tight initial-load skeletons while the WebSocket
+ * is still negotiating + receiving the first message sync — the
+ * earlier "Loading…" string caused a visible layout pop on each
+ * navigation into a chat.
  */
 import type { FormEvent } from "react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -19,9 +21,19 @@ import { useAgent } from "agents/react";
 import { useAgentChat } from "@cloudflare/ai-chat/react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
+import { Send, ChevronRight, ChartBar, Users } from "lucide-react";
 import { ArtifactViewer, asArtifactRef } from "./ArtifactViewer";
+import { WorkspaceSidebar, WorkspaceSidebarBody } from "./WorkspaceSidebar";
 import { getChatHost } from "~/lib/chat-host";
 import { type FriendlyError, toFriendlyError } from "~/lib/agent-error";
+import { Button } from "~/components/ui/button";
+import { Textarea } from "~/components/ui/textarea";
+import { Skeleton } from "~/components/ui/skeleton";
+import { Alert, AlertDescription, AlertTitle } from "~/components/ui/alert";
+import { Badge } from "~/components/ui/badge";
+import { Sheet, SheetContent, SheetHeader, SheetTitle, SheetTrigger } from "~/components/ui/sheet";
+import { Tooltip, TooltipContent, TooltipTrigger } from "~/components/ui/tooltip";
+import { cn } from "~/lib/utils";
 
 export interface ChatMemberSummary {
   userId: string;
@@ -44,8 +56,7 @@ export function ChatRoom({ chatId, title, members = [] }: ChatRoomProps): React.
 
   // Diagnostic: surface the WS target in the browser console so a
   // debug session can immediately verify which host the agents SDK is
-  // pointing at. The most common breakages are stale SSR cache giving
-  // the wrong API_URL, or basePath being silently ignored.
+  // pointing at.
   if (typeof window !== "undefined") {
     // eslint-disable-next-line no-console
     console.log("[chat-room] WS target", {
@@ -67,30 +78,36 @@ export function ChatRoom({ chatId, title, members = [] }: ChatRoomProps): React.
     basePath,
   });
 
-  // useAgentChat manages the AI SDK message timeline + the WS protocol.
-  // It also handles resumable streaming on reconnect via the
-  // cf_agent_stream_resume_request flow.
   const chat = useAgentChat({
     agent,
     credentials: "include",
   });
 
+  // WS-ready gate. We render skeletons until the WebSocket has
+  // opened *and* the agent's first message snapshot has flowed in
+  // (`cf_agent_messages` payload, surfaced via the `message` event
+  // on the connection). Without this, the chat momentarily shows
+  // "no messages" before the existing transcript appears.
+  const [wsOpen, setWsOpen] = useState(false);
+  const [hasInitialSync, setHasInitialSync] = useState(false);
+  const isReady = wsOpen && hasInitialSync;
+
   // Diagnostic: log every WS lifecycle event with timestamps so any
-  // disconnect / failure-to-connect can be correlated with server-
-  // side `chat.ws.close` events in Workers Logs by ts.
-  // Cheap, only fires on state change.
+  // disconnect / failure-to-connect can be correlated with server-side
+  // `chat.ws.close` events in Workers Logs.
   useEffect(() => {
     const openedAt = { current: 0 };
     const onOpen = () => {
       openedAt.current = Date.now();
+      setWsOpen(true);
       console.log("[chat-room] WS open", {
         at: new Date().toISOString(),
         chatId,
       });
     };
     const onClose = (e: CloseEvent) => {
+      setWsOpen(false);
       const sessionMs = openedAt.current ? Date.now() - openedAt.current : null;
-      // Decode common close codes for at-a-glance diagnosis.
       const codeLabels: Record<number, string> = {
         1000: "normal",
         1001: "going_away",
@@ -107,8 +124,6 @@ export function ChatRoom({ chatId, title, members = [] }: ChatRoomProps): React.
         reason: e.reason || "(empty)",
         wasClean: e.wasClean,
         sessionMs,
-        // Browser/network state hints — invaluable for
-        // "did the user's tab go to sleep" investigations.
         documentVisibility: typeof document !== "undefined" ? document.visibilityState : null,
         online: typeof navigator !== "undefined" ? navigator.onLine : null,
       });
@@ -129,8 +144,10 @@ export function ChatRoom({ chatId, title, members = [] }: ChatRoomProps): React.
     };
   }, [agent, chatId]);
 
-  // Presence: the ChatAgent broadcasts `{ type: 'data_agent_presence',
-  // users: [{ userId, joinedAt }] }` whenever the connected set changes.
+  // Presence + initial-sync detector. The agents SDK sends an
+  // initial `cf_agent_messages` payload right after upgrade; we treat
+  // its arrival as the "transcript loaded" signal regardless of
+  // length (zero-length messages → empty state, not skeleton).
   const [presence, setPresence] = useState<{ userId: string; joinedAt: number }[]>([]);
   const memberDirectory = useMemo(() => {
     const map = new Map<string, ChatMemberSummary>();
@@ -149,6 +166,9 @@ export function ChatRoom({ chatId, title, members = [] }: ChatRoomProps): React.
         if (parsed.type === "data_agent_presence" && Array.isArray(parsed.users)) {
           setPresence(parsed.users);
         }
+        if (parsed.type === "cf_agent_messages") {
+          setHasInitialSync(true);
+        }
       } catch {
         // not our message
       }
@@ -157,33 +177,99 @@ export function ChatRoom({ chatId, title, members = [] }: ChatRoomProps): React.
     return () => agent.removeEventListener("message", onMsg);
   }, [agent]);
 
+  // Safety net: if the SDK uses a different sync envelope, fall back
+  // to "WS open + 600ms grace" so we never get stuck on the skeleton.
+  useEffect(() => {
+    if (!wsOpen || hasInitialSync) return;
+    const t = setTimeout(() => setHasInitialSync(true), 600);
+    return () => clearTimeout(t);
+  }, [wsOpen, hasInitialSync]);
+
   return (
-    <div className="flex h-[calc(100dvh-7rem)] flex-col gap-4">
+    <div className="flex h-[calc(100dvh-7rem)] flex-col gap-3">
       {title ? (
-        <header className="flex items-center justify-between gap-3 border-b border-neutral-200 pb-3 dark:border-neutral-800">
-          <h1 className="text-2xl font-semibold tracking-tight">{title}</h1>
-          <div className="flex items-center gap-3 text-xs text-neutral-500">
-            <MembersPopover members={members} active={presence} />
+        <header className="flex items-center justify-between gap-3 border-b border-border pb-3">
+          <h1 className="truncate text-lg font-semibold tracking-tight sm:text-xl">{title}</h1>
+          <div className="flex items-center gap-2 text-xs text-muted-foreground">
             <PresenceBadges users={presence} directory={memberDirectory} />
+            <MembersPopover members={members} active={presence} />
+            <WorkspaceMobileTrigger chatId={chatId} />
           </div>
         </header>
       ) : null}
 
-      <MessageList
-        messages={chat.messages as UIMessage[]}
-        status={chat.status}
-        error={chat.error}
-      />
+      <div className="flex flex-1 gap-0 overflow-hidden">
+        <div className="flex min-w-0 flex-1 flex-col gap-3">
+          {isReady ? (
+            <MessageList
+              messages={chat.messages as UIMessage[]}
+              status={chat.status}
+              error={chat.error}
+            />
+          ) : (
+            <MessageListSkeleton />
+          )}
 
-      <Composer
-        disabled={chat.status === "streaming" || chat.status === "submitted"}
-        onSubmit={(text) => {
-          chat.sendMessage({
-            role: "user",
-            parts: [{ type: "text", text }],
-          });
-        }}
-      />
+          <Composer
+            disabled={!isReady || chat.status === "streaming" || chat.status === "submitted"}
+            onSubmit={(text) => {
+              chat.sendMessage({
+                role: "user",
+                parts: [{ type: "text", text }],
+              });
+            }}
+          />
+        </div>
+
+        <WorkspaceSidebar chatId={chatId} />
+      </div>
+    </div>
+  );
+}
+
+/**
+ * Mobile-only header button that opens the workspace as a slide-over
+ * Sheet. The desktop sidebar is permanently visible (md:flex) so this
+ * is hidden on md+.
+ */
+function WorkspaceMobileTrigger({ chatId }: { chatId: string }) {
+  const [open, setOpen] = useState(false);
+  return (
+    <Sheet open={open} onOpenChange={setOpen}>
+      <SheetTrigger asChild>
+        <Button variant="ghost" size="icon-sm" className="md:hidden" aria-label="Open workspace">
+          <ChartBar className="h-4 w-4" />
+        </Button>
+      </SheetTrigger>
+      <SheetContent side="right" className="w-80 p-0">
+        <SheetHeader className="sr-only">
+          <SheetTitle>Workspace</SheetTitle>
+        </SheetHeader>
+        <WorkspaceSidebarBody chatId={chatId} />
+      </SheetContent>
+    </Sheet>
+  );
+}
+
+function MessageListSkeleton() {
+  // Roughly mirrors the MessageList container + a few message bubbles.
+  // Three bubbles: user (right), assistant (left), assistant streaming
+  // (left, longer). Heights chosen to match the real bubble padding.
+  return (
+    <div
+      className="flex-1 space-y-4 overflow-hidden rounded-lg border border-border bg-card p-4"
+      aria-busy="true"
+      aria-label="Loading chat"
+    >
+      <div className="flex justify-end">
+        <Skeleton className="h-9 w-2/3 rounded-2xl sm:w-1/2" />
+      </div>
+      <div className="flex justify-start">
+        <Skeleton className="h-16 w-3/4 rounded-2xl sm:w-2/3" />
+      </div>
+      <div className="flex justify-start">
+        <Skeleton className="h-12 w-1/2 rounded-2xl" />
+      </div>
     </div>
   );
 }
@@ -195,82 +281,64 @@ function MessageList({
 }: {
   messages: UIMessage[];
   status: string;
-  /**
-   * `chat.error` from useAgentChat — an `Error` whose `.message` is
-   * either a plain string (network/AI SDK failure) or our structured
-   * `DATA_AGENT_ERROR\n{...}` envelope (anticipated server-side
-   * failures: rate limits, sandbox timeouts, SQL errors). The
-   * translator handles both shapes.
-   */
   error?: Error;
 }): React.ReactElement {
   const ref = useRef<HTMLDivElement | null>(null);
   const friendly = toFriendlyError(error);
 
+  // Auto-scroll to bottom on new messages.
+  useEffect(() => {
+    if (!ref.current) return;
+    ref.current.scrollTop = ref.current.scrollHeight;
+  }, [messages.length, status]);
+
   return (
     <div
       ref={ref}
-      className="flex-1 space-y-4 overflow-y-auto rounded-lg border border-neutral-200 bg-white p-4 dark:border-neutral-800 dark:bg-neutral-950"
+      className="flex-1 space-y-4 overflow-y-auto rounded-lg border border-border bg-card p-4"
     >
       {messages.length === 0 && <EmptyState />}
       {messages.map((m) => (
         <MessageBubble key={m.id} message={m} />
       ))}
-      {status === "streaming" && <p className="text-xs text-neutral-500">… thinking</p>}
+      {status === "streaming" && (
+        <p className="flex items-center gap-2 text-xs text-muted-foreground">
+          <span className="inline-flex gap-0.5">
+            <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-muted-foreground [animation-delay:-0.3s]" />
+            <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-muted-foreground [animation-delay:-0.15s]" />
+            <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-muted-foreground" />
+          </span>
+          thinking
+        </p>
+      )}
       {/*
         We render the error banner as the *last* item in the message
         list (rather than a fixed banner at the top) so it appears
-        in-context with the failed turn. It auto-clears as soon as
-        the user sends the next message — `chat.error` resets on the
-        next sendMessage call.
+        in-context with the failed turn.
       */}
       {friendly && <ErrorBanner friendly={friendly} />}
-      {/*
-        `status === "error"` is set by the AI SDK whenever the
-        request errors at the transport layer (e.g. WS close mid-
-        stream). When `chat.error` is also populated we let the
-        banner above speak for the failure; otherwise show a
-        connection-level fallback.
-      */}
       {status === "error" && !friendly && (
-        <p className="text-xs text-red-600 dark:text-red-400">Connection error — reconnecting…</p>
+        <p className="text-xs text-destructive">Connection error — reconnecting…</p>
       )}
     </div>
   );
 }
 
-function ErrorBanner({ friendly }: { friendly: FriendlyError }): React.ReactElement {
-  // Tailwind classes are statically referenced (no string
-  // interpolation into a class name) so the JIT picks them up
-  // reliably across all severity branches.
-  const styles = {
-    info: "border-blue-200 bg-blue-50 text-blue-900 dark:border-blue-900/50 dark:bg-blue-950/30 dark:text-blue-200",
-    warn: "border-amber-200 bg-amber-50 text-amber-900 dark:border-amber-900/50 dark:bg-amber-950/30 dark:text-amber-200",
-    error:
-      "border-red-200 bg-red-50 text-red-900 dark:border-red-900/50 dark:bg-red-950/30 dark:text-red-200",
-  }[friendly.severity];
+function ErrorBanner({ friendly }: { friendly: FriendlyError }) {
+  const variant: "destructive" | "warn" | "info" =
+    friendly.severity === "error" ? "destructive" : friendly.severity === "warn" ? "warn" : "info";
   return (
-    <div
-      role="alert"
-      className={`flex items-start gap-3 rounded-md border px-3 py-2 text-sm ${styles}`}
-    >
-      <span aria-hidden className="mt-0.5 select-none">
-        {friendly.severity === "error" ? "⚠" : "ℹ"}
-      </span>
-      <div className="space-y-0.5">
-        <p className="font-medium">{friendly.title}</p>
-        {friendly.detail ? <p className="text-xs opacity-80">{friendly.detail}</p> : null}
-      </div>
-    </div>
+    <Alert variant={variant}>
+      <AlertTitle>{friendly.title}</AlertTitle>
+      {friendly.detail ? <AlertDescription>{friendly.detail}</AlertDescription> : null}
+    </Alert>
   );
 }
 
 function EmptyState(): React.ReactElement {
   return (
-    <div className="space-y-2 py-12 text-center text-sm text-neutral-500">
-      <p className="text-base font-medium text-neutral-700 dark:text-neutral-300">
-        Ask anything about your data
-      </p>
+    <div className="space-y-2 py-12 text-center text-sm text-muted-foreground">
+      <p className="text-base font-medium text-foreground">Ask anything about your data</p>
       <p>Try: "list all tables and how many rows each has"</p>
       <p>Or: "show revenue by month for the last 6 months as a line chart"</p>
     </div>
@@ -287,18 +355,16 @@ interface UIPart {
   errorText?: string;
 }
 
-function MessageBubble({ message }: { message: UIMessage }): React.ReactElement {
+function MessageBubble({ message }: { message: UIMessage }) {
   const isUser = message.role === "user";
   const parts = (message.parts as unknown as UIPart[]) ?? [];
   return (
     <div className={isUser ? "flex justify-end" : "flex justify-start"}>
       <div
-        className={[
+        className={cn(
           "max-w-[78ch] rounded-2xl px-4 py-3 text-sm",
-          isUser
-            ? "bg-neutral-900 text-neutral-100 dark:bg-neutral-100 dark:text-neutral-900"
-            : "bg-neutral-100 text-neutral-900 dark:bg-neutral-800 dark:text-neutral-100",
-        ].join(" ")}
+          isUser ? "bg-primary text-primary-foreground" : "bg-muted text-foreground"
+        )}
       >
         {parts.map((part, i) => (
           <PartRender key={i} part={part} isUser={isUser} />
@@ -334,27 +400,16 @@ function PartRender({
   if (part.type === "step-start" || part.type === "step-end") {
     return null;
   }
-  // Unknown part — render as JSON for debugging.
   return (
-    <pre className="my-1 overflow-x-auto rounded bg-black/10 p-2 text-[11px] dark:bg-white/10">
+    <pre className="my-1 overflow-x-auto rounded bg-foreground/10 p-2 text-[11px]">
       {JSON.stringify(part, null, 2)}
     </pre>
   );
 }
 
-/**
- * Reasoning part — the model's internal scratchpad. Rendered as a
- * collapsible "Thinking…" chip with the body indented and dimmed so
- * it reads as side-channel context, not as the answer. While the
- * stream is in flight (state="streaming"), shows a pulsing dot.
- *
- * Defaults to *expanded* when streaming so the user sees activity,
- * collapses to a one-liner once done so the final answer dominates.
- */
-function ReasoningPart({ part }: { part: UIPart }): React.ReactElement {
+function ReasoningPart({ part }: { part: UIPart }) {
   const text = part.text ?? "";
   const streaming = part.state === "streaming";
-  // First sentence (or first 120 chars) for the collapsed preview.
   const preview = (() => {
     const trimmed = text.trim();
     const firstLine = trimmed.split(/\n/, 1)[0] ?? "";
@@ -363,72 +418,48 @@ function ReasoningPart({ part }: { part: UIPart }): React.ReactElement {
   })();
 
   return (
-    <details
-      className="group my-1 text-[12px]"
-      // Auto-expand only while streaming. Once done, collapse to keep
-      // the chat dense and let the final answer dominate.
-      open={streaming}
-    >
-      <summary className="flex cursor-pointer select-none items-center gap-1.5 text-neutral-500 transition hover:text-neutral-700 dark:hover:text-neutral-300">
-        <svg
-          viewBox="0 0 16 16"
-          className="h-3 w-3 shrink-0 transition group-open:rotate-90"
-          aria-hidden
-        >
-          <path d="M5 4l4 4-4 4" stroke="currentColor" strokeWidth="1.4" fill="none" />
-        </svg>
+    <details className="group my-1 text-[12px]" open={streaming}>
+      <summary className="flex cursor-pointer select-none items-center gap-1.5 text-muted-foreground transition hover:text-foreground">
+        <ChevronRight className="h-3 w-3 shrink-0 transition group-open:rotate-90" />
         <span className="font-medium uppercase tracking-wide text-[10px]">Thinking</span>
         {streaming && (
           <span
-            className="inline-block h-1.5 w-1.5 animate-pulse rounded-full bg-neutral-400"
+            className="inline-block h-1.5 w-1.5 animate-pulse rounded-full bg-muted-foreground"
             aria-label="thinking"
           />
         )}
         {!streaming && preview && (
-          <span className="truncate font-normal italic text-neutral-400 group-open:hidden">
+          <span className="truncate font-normal italic text-muted-foreground/80 group-open:hidden">
             {preview}
           </span>
         )}
       </summary>
-      <div className="mt-1 ml-4 whitespace-pre-wrap border-l-2 border-neutral-200 pl-3 italic leading-relaxed text-neutral-500 dark:border-neutral-800 dark:text-neutral-400">
+      <div className="mt-1 ml-4 whitespace-pre-wrap border-l-2 border-border pl-3 italic leading-relaxed text-muted-foreground">
         {text}
       </div>
     </details>
   );
 }
 
-/**
- * Tool call rendering. Codemode tool calls (`tool-codemode`) get a
- * special treatment: we extract the user-meaningful `input.code` and
- * `output.result` and show them as code blocks instead of dumping the
- * raw JSON envelope, which is mostly noise.
- */
-function ToolPart({ part }: { part: UIPart }): React.ReactElement {
+function ToolPart({ part }: { part: UIPart }) {
   const rawToolName = part.toolName ?? part.type?.replace(/^tool-/, "") ?? "tool";
   const isCodemode = rawToolName === "codemode";
   const status =
     part.state === "output-available" ? "ok" : part.state === "output-error" ? "err" : "run";
 
-  // Codemode wraps the artifact return in `{ code, result: <artifact> }`.
-  // Try to surface an artifact from either shape.
   const artifact = part.output != null ? asArtifactRef(part.output) : null;
 
-  // Extract human-friendly views.
   const codemodeInput = isCodemode ? extractCodemodeCode(part.input) : null;
   const codemodeOutput = isCodemode ? extractCodemodeResult(part.output) : null;
 
   const summaryLabel = isCodemode ? "ran code" : rawToolName;
   const statusBadgeCls = {
-    ok: "bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300",
-    err: "bg-red-100 text-red-700 dark:bg-red-900/40 dark:text-red-300",
-    run: "bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-300",
+    ok: "bg-emerald-500/15 text-emerald-700 dark:text-emerald-300",
+    err: "bg-destructive/15 text-destructive",
+    run: "bg-amber-500/15 text-amber-700 dark:text-amber-300",
   }[status];
   const statusLabel = { ok: "✓", err: "✗", run: "…" }[status];
 
-  // Friendly one-line summary for tool errors. Most tool failures
-  // are SQL errors, sandbox timeouts, or read-only-mode rejections —
-  // worth surfacing above the collapsed details so the user knows
-  // why the turn failed without expanding.
   const errorSummary =
     status === "err" && part.errorText ? summarizeToolError(rawToolName, part.errorText) : null;
 
@@ -436,7 +467,7 @@ function ToolPart({ part }: { part: UIPart }): React.ReactElement {
     <div className="my-1 space-y-1">
       {artifact ? <ArtifactViewer ref={artifact} /> : null}
       {errorSummary && (
-        <p className="text-xs text-red-700 dark:text-red-300">
+        <p className="text-xs text-destructive">
           <span className="font-medium">{errorSummary.headline}</span>
           {errorSummary.detail ? (
             <>
@@ -446,87 +477,75 @@ function ToolPart({ part }: { part: UIPart }): React.ReactElement {
           ) : null}
         </p>
       )}
-      <details className="group rounded-lg border border-neutral-200 bg-white/60 text-xs dark:border-neutral-800 dark:bg-black/20">
+      <details className="group rounded-lg border border-border bg-background/40 text-xs">
         <summary className="flex cursor-pointer select-none items-center gap-2 px-2.5 py-1.5">
           <span
-            className={[
+            className={cn(
               "inline-flex h-4 w-4 items-center justify-center rounded text-[10px] font-bold leading-none",
-              statusBadgeCls,
-            ].join(" ")}
+              statusBadgeCls
+            )}
             aria-label={status}
           >
             {statusLabel}
           </span>
-          <span className="font-medium text-neutral-700 dark:text-neutral-300">{summaryLabel}</span>
+          <span className="font-medium text-foreground/80">{summaryLabel}</span>
           {isCodemode && codemodeInput && (
-            <span className="ml-1 truncate font-mono text-[10px] text-neutral-500">
+            <span className="ml-1 truncate font-mono text-[10px] text-muted-foreground">
               {summarizeCode(codemodeInput)}
             </span>
           )}
-          <svg
-            viewBox="0 0 16 16"
-            className="ml-auto h-3 w-3 shrink-0 text-neutral-400 transition group-open:rotate-90"
-            aria-hidden
-          >
-            <path d="M5 4l4 4-4 4" stroke="currentColor" strokeWidth="1.4" fill="none" />
-          </svg>
+          <ChevronRight className="ml-auto h-3 w-3 shrink-0 text-muted-foreground transition group-open:rotate-90" />
         </summary>
 
-        <div className="space-y-2 border-t border-neutral-200 px-2.5 py-2 dark:border-neutral-800">
-          {/* Codemode: dedicated code + result blocks */}
+        <div className="space-y-2 border-t border-border px-2.5 py-2">
           {isCodemode && codemodeInput && (
             <div>
-              <div className="mb-0.5 text-[10px] font-semibold uppercase tracking-wide text-neutral-500">
+              <div className="mb-0.5 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
                 Code
               </div>
-              <pre className="max-h-72 overflow-auto rounded bg-neutral-50 px-2 py-1.5 font-mono text-[11px] leading-snug dark:bg-neutral-950">
+              <pre className="max-h-72 overflow-auto rounded bg-muted/50 px-2 py-1.5 font-mono text-[11px] leading-snug">
                 {codemodeInput}
               </pre>
             </div>
           )}
           {isCodemode && codemodeOutput !== null && (
             <div>
-              <div className="mb-0.5 text-[10px] font-semibold uppercase tracking-wide text-neutral-500">
+              <div className="mb-0.5 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
                 Result
               </div>
-              <pre className="max-h-72 overflow-auto rounded bg-neutral-50 px-2 py-1.5 font-mono text-[11px] leading-snug dark:bg-neutral-950">
+              <pre className="max-h-72 overflow-auto rounded bg-muted/50 px-2 py-1.5 font-mono text-[11px] leading-snug">
                 {codemodeOutput}
               </pre>
             </div>
           )}
 
-          {/* Non-codemode: original input/output JSON dump */}
           {!isCodemode && part.input != null && (
             <div>
-              <div className="mb-0.5 text-[10px] font-semibold uppercase tracking-wide text-neutral-500">
+              <div className="mb-0.5 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
                 Input
               </div>
-              <pre className="max-h-72 overflow-auto whitespace-pre-wrap break-words rounded bg-neutral-50 px-2 py-1.5 font-mono text-[11px] leading-snug dark:bg-neutral-950">
+              <pre className="max-h-72 overflow-auto whitespace-pre-wrap break-words rounded bg-muted/50 px-2 py-1.5 font-mono text-[11px] leading-snug">
                 {safeJsonStringify(part.input)}
               </pre>
             </div>
           )}
           {!isCodemode && part.output != null && (
             <div>
-              <div className="mb-0.5 text-[10px] font-semibold uppercase tracking-wide text-neutral-500">
+              <div className="mb-0.5 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
                 Output
               </div>
-              <pre className="max-h-72 overflow-auto whitespace-pre-wrap break-words rounded bg-neutral-50 px-2 py-1.5 font-mono text-[11px] leading-snug dark:bg-neutral-950">
+              <pre className="max-h-72 overflow-auto whitespace-pre-wrap break-words rounded bg-muted/50 px-2 py-1.5 font-mono text-[11px] leading-snug">
                 {safeJsonStringify(part.output)}
               </pre>
             </div>
           )}
-          {part.errorText && <p className="text-red-600 dark:text-red-400">{part.errorText}</p>}
+          {part.errorText && <p className="text-destructive">{part.errorText}</p>}
         </div>
       </details>
     </div>
   );
 }
 
-/**
- * Codemode input is `{ code: "<source>" }` (already a stringified
- * object in some shapes — handle both). Returns the bare source.
- */
 function extractCodemodeCode(input: unknown): string | null {
   if (input == null) return null;
   let obj: unknown = input;
@@ -535,7 +554,6 @@ function extractCodemodeCode(input: unknown): string | null {
     try {
       obj = JSON.parse(raw);
     } catch {
-      // Not JSON — assume the LLM already gave us bare source.
       return raw;
     }
   }
@@ -546,10 +564,6 @@ function extractCodemodeCode(input: unknown): string | null {
   return null;
 }
 
-/**
- * Codemode output is `{ code, result: <whatever the function returned> }`.
- * Strip the echoed `code` field and pretty-print just the result.
- */
 function extractCodemodeResult(output: unknown): string | null {
   if (output == null) return null;
   let obj: unknown = output;
@@ -570,11 +584,7 @@ function extractCodemodeResult(output: unknown): string | null {
   return safeJsonStringify(obj);
 }
 
-/** One-liner preview of a code blob for the collapsed summary. */
 function summarizeCode(code: string): string {
-  // Strip the standard `async () => {` wrapper if present, then take
-  // the first non-empty line of the body so the user sees what the
-  // call actually does (e.g. "await db.introspect()").
   const stripped = code
     .replace(/^\s*async\s*\(\s*\)\s*=>\s*\{?\s*/i, "")
     .replace(/\}\s*$/, "")
@@ -592,14 +602,6 @@ function safeJsonStringify(v: unknown): string {
   }
 }
 
-/**
- * Translate a raw tool error into a one-line, user-readable summary.
- * Tool errors (subtask 2f89ff) are mostly SQL/sandbox failures
- * surfaced via the AI SDK's `part.errorText` — the raw text is
- * usually a stringified Postgres error or a sandbox timeout. We
- * detect a few well-known patterns and fall back to truncation
- * otherwise. Never echo a raw stack trace.
- */
 function summarizeToolError(
   toolName: string,
   errorText: string
@@ -616,9 +618,15 @@ function summarizeToolError(
       detail: "The agent's role doesn't have access to that table.",
     };
   if (t.includes("relation") && t.includes("does not exist"))
-    return { headline: "Table doesn't exist", detail: errorText.slice(0, 140) };
+    return {
+      headline: "Table doesn't exist",
+      detail: errorText.slice(0, 140),
+    };
   if (t.includes("syntax error"))
-    return { headline: "SQL syntax error", detail: errorText.slice(0, 140) };
+    return {
+      headline: "SQL syntax error",
+      detail: errorText.slice(0, 140),
+    };
   if (t.includes("read-only") || t.includes("read only"))
     return {
       headline: "Only SELECT queries are allowed",
@@ -629,7 +637,6 @@ function summarizeToolError(
       headline: "Tool ran out of time",
       detail: "The data step took longer than 30 seconds.",
     };
-  // Generic fallback: surface the tool name + a truncated message.
   const detail = errorText.length > 160 ? `${errorText.slice(0, 160)}…` : errorText;
   return { headline: `${toolName} failed`, detail };
 }
@@ -646,19 +653,25 @@ function MembersPopover({
   const activeIds = new Set(active.map((u) => u.userId));
   return (
     <div className="relative">
-      <button
+      <Button
         type="button"
+        variant="ghost"
+        size="sm"
         onClick={() => setOpen((v) => !v)}
-        className="rounded-md px-2 py-1 hover:bg-neutral-100 dark:hover:bg-neutral-800"
         aria-haspopup
         aria-expanded={open}
+        className="gap-1.5"
       >
-        {members.length} member{members.length === 1 ? "" : "s"}
-      </button>
+        <Users className="h-3.5 w-3.5" />
+        <span className="hidden sm:inline">
+          {members.length} member{members.length === 1 ? "" : "s"}
+        </span>
+        <span className="sm:hidden">{members.length}</span>
+      </Button>
       {open && (
         <div
           role="dialog"
-          className="absolute right-0 top-full z-10 mt-1 w-64 overflow-hidden rounded-lg border border-neutral-200 bg-white shadow-lg dark:border-neutral-800 dark:bg-neutral-950"
+          className="absolute right-0 top-full z-10 mt-1 w-64 overflow-hidden rounded-lg border border-border bg-popover text-popover-foreground shadow-lg"
           onMouseLeave={() => setOpen(false)}
         >
           <ul className="max-h-72 overflow-y-auto py-1">
@@ -666,20 +679,24 @@ function MembersPopover({
               <li key={m.userId} className="flex items-center gap-2 px-3 py-2 text-xs">
                 <span
                   className="inline-block h-2 w-2 rounded-full"
-                  style={{ background: activeIds.has(m.userId) ? "#10b981" : "#a3a3a3" }}
+                  style={{
+                    background: activeIds.has(m.userId) ? "#10b981" : "#a3a3a3",
+                  }}
                   aria-label={activeIds.has(m.userId) ? "online" : "offline"}
                 />
                 <span className="min-w-0 flex-1">
-                  <span className="block truncate font-medium text-neutral-800 dark:text-neutral-100">
+                  <span className="block truncate font-medium text-foreground">
                     {m.name || m.email}
                   </span>
                   {m.name && (
-                    <span className="block truncate text-[10px] text-neutral-500">{m.email}</span>
+                    <span className="block truncate text-[10px] text-muted-foreground">
+                      {m.email}
+                    </span>
                   )}
                 </span>
-                <span className="text-[10px] uppercase tracking-wide text-neutral-400">
+                <Badge variant="muted" className="text-[10px] uppercase">
                   {m.role}
-                </span>
+                </Badge>
               </li>
             ))}
           </ul>
@@ -697,41 +714,36 @@ function PresenceBadges({
   directory: Map<string, ChatMemberSummary>;
 }) {
   if (users.length <= 1) return null;
-  // Render up to 4 colored circles. Initials and tooltips come from the
-  // member directory (display name → first letter of given + family,
-  // falling back to email or userId truncation).
   const visible = users.slice(0, 4);
   const overflow = users.length - visible.length;
-  const tooltipList = users
-    .map((u) => directory.get(u.userId)?.name ?? directory.get(u.userId)?.email ?? u.userId)
-    .join(", ");
   return (
-    <div className="flex items-center gap-1.5" title={tooltipList}>
+    <div className="flex items-center gap-1.5">
       <div className="flex -space-x-1.5">
         {visible.map((u) => {
           const member = directory.get(u.userId);
           const display = member?.name ?? member?.email ?? u.userId;
           const initials = nameToInitials(display);
           return (
-            <span
-              key={u.userId}
-              className="inline-flex h-6 w-6 items-center justify-center rounded-full border-2 border-neutral-50 bg-neutral-200 text-[9px] font-semibold uppercase text-neutral-700 ring-1 ring-neutral-300 dark:border-neutral-950 dark:bg-neutral-700 dark:text-neutral-100 dark:ring-neutral-600"
-              style={{ background: idToColor(u.userId) }}
-              title={display}
-            >
-              {initials}
-            </span>
+            <Tooltip key={u.userId}>
+              <TooltipTrigger asChild>
+                <span
+                  className="inline-flex h-6 w-6 items-center justify-center rounded-full border-2 border-background text-[9px] font-semibold uppercase text-foreground/70 ring-1 ring-border"
+                  style={{ background: idToColor(u.userId) }}
+                >
+                  {initials}
+                </span>
+              </TooltipTrigger>
+              <TooltipContent>{display}</TooltipContent>
+            </Tooltip>
           );
         })}
       </div>
-      {overflow > 0 && <span className="text-[10px] text-neutral-500">+{overflow}</span>}
+      {overflow > 0 && <span className="text-[10px] text-muted-foreground">+{overflow}</span>}
     </div>
   );
 }
 
 function nameToInitials(name: string): string {
-  // Strip emails to local-part, then take first letters of up to two
-  // tokens. Single-token names use the first 2 letters.
   const trimmed = name.includes("@") ? name.split("@")[0]! : name;
   const parts = trimmed.split(/[\s._-]+/).filter(Boolean);
   if (parts.length >= 2) {
@@ -741,20 +753,13 @@ function nameToInitials(name: string): string {
 }
 
 function idToColor(id: string): string {
-  // Deterministic pleasant pastel from the id hash.
   let h = 0;
   for (let i = 0; i < id.length; i++) h = (h * 31 + id.charCodeAt(i)) >>> 0;
   const hue = h % 360;
   return `oklch(0.78 0.09 ${hue})`;
 }
 
-function Composer({
-  disabled,
-  onSubmit,
-}: {
-  disabled: boolean;
-  onSubmit: (text: string) => void;
-}): React.ReactElement {
+function Composer({ disabled, onSubmit }: { disabled: boolean; onSubmit: (text: string) => void }) {
   const [text, setText] = useState("");
   const send = useCallback(
     (e: FormEvent) => {
@@ -769,7 +774,7 @@ function Composer({
 
   return (
     <form onSubmit={send} className="flex items-end gap-2">
-      <textarea
+      <Textarea
         value={text}
         onChange={(e) => setText(e.target.value)}
         placeholder={
@@ -785,15 +790,18 @@ function Composer({
             send(e as unknown as FormEvent);
           }
         }}
-        className="min-h-[3rem] flex-1 resize-y rounded-lg border border-neutral-300 bg-white px-3 py-2 text-sm shadow-inner focus:border-neutral-500 focus:outline-none dark:border-neutral-700 dark:bg-neutral-900"
+        className="min-h-[3rem] flex-1 resize-y"
       />
-      <button
+      <Button
         type="submit"
         disabled={disabled || !text.trim()}
-        className="self-stretch rounded-lg bg-neutral-900 px-5 text-sm font-medium text-white transition hover:bg-neutral-700 disabled:cursor-not-allowed disabled:bg-neutral-300 dark:bg-neutral-100 dark:text-neutral-900 dark:hover:bg-neutral-300 dark:disabled:bg-neutral-700"
+        size="lg"
+        className="self-stretch"
+        aria-label="Send"
       >
-        Send
-      </button>
+        <Send className="h-4 w-4" />
+        <span className="hidden sm:inline">Send</span>
+      </Button>
     </form>
   );
 }

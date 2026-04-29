@@ -1,7 +1,14 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
+import { Plus, Trash2 } from "lucide-react";
 import { dbProfilesApi, type DbProfile } from "~/lib/api";
+import { Button } from "~/components/ui/button";
+import { Input } from "~/components/ui/input";
+import { Label } from "~/components/ui/label";
+import { Badge } from "~/components/ui/badge";
+import { Alert, AlertDescription } from "~/components/ui/alert";
+import { ListSkeleton } from "~/components/list-skeleton";
 
 export const Route = createFileRoute("/app/db-profiles")({
   component: DbProfilesRoute,
@@ -18,42 +25,67 @@ function DbProfilesRoute() {
 
   return (
     <div className="mx-auto max-w-4xl space-y-6">
-      <header className="flex items-center justify-between">
-        <h1 className="text-2xl font-semibold tracking-tight">Database connections</h1>
-        <button
-          type="button"
+      <header className="flex items-center justify-between gap-3">
+        <div>
+          <h1 className="text-2xl font-semibold tracking-tight">Database connections</h1>
+          <p className="mt-1 text-sm text-muted-foreground">
+            Read-only Postgres URLs the agent can query.
+          </p>
+        </div>
+        <Button
+          size="sm"
+          variant={showForm ? "ghost" : "default"}
           onClick={() => setShowForm(!showForm)}
-          className="rounded-md bg-neutral-900 px-3 py-1.5 text-sm font-medium text-white hover:bg-neutral-800 dark:bg-white dark:text-neutral-900 dark:hover:bg-neutral-200"
         >
-          {showForm ? "Cancel" : "Add connection"}
-        </button>
+          {showForm ? (
+            "Cancel"
+          ) : (
+            <>
+              <Plus className="h-4 w-4" />
+              Add connection
+            </>
+          )}
+        </Button>
       </header>
 
       {showForm && <NewProfileForm onDone={() => setShowForm(false)} />}
 
-      {profiles.isLoading && <p className="text-sm text-neutral-500">Loading…</p>}
+      {profiles.isLoading && <ListSkeleton rows={3} trailing />}
+
       {profiles.error && (
-        <p className="text-sm text-red-600 dark:text-red-400">
-          {(profiles.error as Error).message}
-        </p>
-      )}
-      {profiles.data && profiles.data.length === 0 && !showForm && (
-        <p className="text-sm text-neutral-600 dark:text-neutral-400">
-          No connections yet. Add one to start chatting with a database.
-        </p>
+        <Alert variant="destructive">
+          <AlertDescription>{(profiles.error as Error).message}</AlertDescription>
+        </Alert>
       )}
 
-      <ul className="divide-y divide-neutral-200 rounded-lg border border-neutral-200 dark:divide-neutral-800 dark:border-neutral-800">
-        {profiles.data?.map((p) => (
-          <ProfileRow
-            key={p.id}
-            profile={p}
-            onChange={() => qc.invalidateQueries({ queryKey: ["db-profiles"] })}
-          />
-        ))}
-      </ul>
+      {profiles.data && profiles.data.length === 0 && !showForm && (
+        <div className="rounded-lg border border-dashed border-border bg-card p-10 text-center">
+          <p className="text-sm font-medium">No connections yet</p>
+          <p className="mt-1 text-sm text-muted-foreground">
+            Add one to start chatting with a database.
+          </p>
+        </div>
+      )}
+
+      {profiles.data && profiles.data.length > 0 && (
+        <ul className="divide-y divide-border rounded-lg border border-border bg-card">
+          {profiles.data.map((p) => (
+            <ProfileRow
+              key={p.id}
+              profile={p}
+              onChange={() => qc.invalidateQueries({ queryKey: ["db-profiles"] })}
+            />
+          ))}
+        </ul>
+      )}
     </div>
   );
+}
+
+function statusBadge(status: DbProfile["lastTestedStatus"]) {
+  if (status === "ok") return { variant: "success" as const, label: "ok" };
+  if (status === "failed") return { variant: "destructive" as const, label: "failed" };
+  return { variant: "muted" as const, label: status };
 }
 
 function ProfileRow({ profile, onChange }: { profile: DbProfile; onChange: () => void }) {
@@ -66,41 +98,39 @@ function ProfileRow({ profile, onChange }: { profile: DbProfile; onChange: () =>
     onSuccess: onChange,
   });
 
-  const status = profile.lastTestedStatus;
-  const badge =
-    status === "ok"
-      ? "bg-emerald-100 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-300"
-      : status === "failed"
-        ? "bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-300"
-        : "bg-neutral-100 text-neutral-600 dark:bg-neutral-800 dark:text-neutral-400";
+  const badge = statusBadge(profile.lastTestedStatus);
 
   return (
-    <li className="flex items-center justify-between gap-4 px-4 py-3">
-      <div className="min-w-0 flex-1">
+    <li className="flex flex-wrap items-center gap-3 px-4 py-3 sm:flex-nowrap">
+      <div className="min-w-0 flex-1 basis-full sm:basis-auto">
         <p className="truncate font-medium">{profile.name}</p>
-        <p className="truncate font-mono text-xs text-neutral-500">
+        <p className="truncate font-mono text-xs text-muted-foreground">
           {profile.host}:{profile.port}/{profile.database}
         </p>
       </div>
-      <span className={`rounded-full px-2 py-0.5 text-xs font-medium ${badge}`}>{status}</span>
-      <button
+      <Badge variant={badge.variant}>{badge.label}</Badge>
+      <Button
         type="button"
+        variant="ghost"
+        size="sm"
         onClick={() => test.mutate()}
         disabled={test.isPending}
-        className="text-xs text-neutral-600 hover:text-neutral-900 disabled:opacity-50 dark:text-neutral-400 dark:hover:text-neutral-100"
       >
         {test.isPending ? "Testing…" : "Test"}
-      </button>
-      <button
+      </Button>
+      <Button
         type="button"
+        variant="ghost"
+        size="icon-sm"
+        aria-label={`Delete ${profile.name}`}
         onClick={() => {
           if (confirm(`Delete ${profile.name}?`)) remove.mutate();
         }}
         disabled={remove.isPending}
-        className="text-xs text-red-600 hover:text-red-700 disabled:opacity-50 dark:text-red-400"
+        className="text-destructive hover:text-destructive"
       >
-        Delete
-      </button>
+        <Trash2 className="h-4 w-4" />
+      </Button>
     </li>
   );
 }
@@ -126,9 +156,10 @@ function NewProfileForm({ onDone }: { onDone: () => void }) {
 
   function field(key: keyof typeof form, label: string, type = "text") {
     return (
-      <label className="block space-y-1">
-        <span className="text-sm font-medium">{label}</span>
-        <input
+      <div className="space-y-1.5">
+        <Label htmlFor={key}>{label}</Label>
+        <Input
+          id={key}
           type={type}
           required
           value={form[key] as string | number}
@@ -138,21 +169,20 @@ function NewProfileForm({ onDone }: { onDone: () => void }) {
               [key]: type === "number" ? Number(e.target.value) : e.target.value,
             })
           }
-          className="block w-full rounded-md border border-neutral-300 bg-white px-3 py-2 text-sm focus:border-neutral-900 focus:outline-none focus:ring-2 focus:ring-neutral-900/10 dark:border-neutral-700 dark:bg-neutral-950 dark:focus:border-neutral-200"
         />
-      </label>
+      </div>
     );
   }
 
   return (
     <form
-      className="space-y-4 rounded-lg border border-neutral-200 bg-neutral-50 p-4 dark:border-neutral-800 dark:bg-neutral-900"
+      className="space-y-4 rounded-lg border border-border bg-card p-4"
       onSubmit={(e) => {
         e.preventDefault();
         create.mutate();
       }}
     >
-      <div className="grid grid-cols-2 gap-3">
+      <div className="grid gap-3 sm:grid-cols-2">
         {field("name", "Display name")}
         {field("database", "Database")}
         {field("host", "Host")}
@@ -160,15 +190,18 @@ function NewProfileForm({ onDone }: { onDone: () => void }) {
         {field("user", "User")}
         {field("password", "Password", "password")}
       </div>
-      <button
-        type="submit"
-        disabled={create.isPending}
-        className="rounded-md bg-neutral-900 px-3 py-1.5 text-sm font-medium text-white hover:bg-neutral-800 disabled:opacity-50 dark:bg-white dark:text-neutral-900 dark:hover:bg-neutral-200"
-      >
-        {create.isPending ? "Testing connection…" : "Test & save"}
-      </button>
+      <div className="flex items-center gap-2">
+        <Button type="submit" disabled={create.isPending}>
+          {create.isPending ? "Testing connection…" : "Test & save"}
+        </Button>
+        <Button type="button" variant="ghost" onClick={onDone}>
+          Cancel
+        </Button>
+      </div>
       {create.error && (
-        <p className="text-sm text-red-600 dark:text-red-400">{(create.error as Error).message}</p>
+        <Alert variant="destructive">
+          <AlertDescription>{(create.error as Error).message}</AlertDescription>
+        </Alert>
       )}
     </form>
   );

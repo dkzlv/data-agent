@@ -1,22 +1,51 @@
 /**
  * WorkspaceSidebar — lists the artifacts the agent has produced in this
- * chat (most recent first), with a click-to-preview interaction.
+ * chat (most recent first), with click-to-open full-size preview in a
+ * shadcn Dialog. Earlier versions rendered a mini ArtifactViewer
+ * inline in the sidebar; that double-displayed the artifact (already
+ * inline in the chat) and clipped chart titles inside the 288px-wide
+ * column. Dialog gives the chart full breathing room.
  *
  * Backed by `GET /api/chats/:id/artifacts`. Polled at low frequency
  * (every 8s) while the chat page is mounted so newly produced artifacts
  * appear without a page reload — long-term we'll push these via the WS
  * channel, but polling is fine until volume warrants it.
+ *
+ * Two layouts:
+ *   - Desktop (md+): permanent column on the right of the chat.
+ *   - Mobile: rendered inside a Sheet via <WorkspaceSidebarSheet>.
+ *     The same body is shared; only the chrome differs.
  */
 import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
+import { BarChart3, FileText, LineChart, ScatterChart, X } from "lucide-react";
 import { ArtifactViewer, resolveArtifactUrl, type ArtifactRef } from "./ArtifactViewer";
 import { chatsApi } from "~/lib/api";
+import { Dialog, DialogContent, DialogHeader, DialogTitle } from "~/components/ui/dialog";
+import { ScrollArea } from "~/components/ui/scroll-area";
+import { Skeleton } from "~/components/ui/skeleton";
+import { Badge } from "~/components/ui/badge";
+import { Button } from "~/components/ui/button";
+import { cn } from "~/lib/utils";
 
 interface WorkspaceSidebarProps {
   chatId: string;
 }
 
 export function WorkspaceSidebar({ chatId }: WorkspaceSidebarProps) {
+  return (
+    <aside className="hidden h-full w-72 shrink-0 flex-col border-l border-border bg-sidebar md:flex">
+      <WorkspaceContent chatId={chatId} />
+    </aside>
+  );
+}
+
+/**
+ * Body that's reused between the permanent desktop sidebar and the
+ * mobile Sheet. Owns its own dialog state so the artifact preview
+ * works the same in either context.
+ */
+function WorkspaceContent({ chatId }: { chatId: string }) {
   const list = useQuery({
     queryKey: ["chat-artifacts", chatId],
     queryFn: () => chatsApi.listArtifacts(chatId),
@@ -28,149 +57,135 @@ export function WorkspaceSidebar({ chatId }: WorkspaceSidebarProps) {
   const artifacts = list.data?.artifacts ?? [];
 
   return (
-    <aside className="flex h-full w-72 shrink-0 flex-col border-l border-neutral-200 bg-neutral-50/50 dark:border-neutral-800 dark:bg-neutral-950/50">
-      <header className="flex items-center justify-between border-b border-neutral-200 px-3 py-2 dark:border-neutral-800">
-        <h2 className="text-xs font-semibold uppercase tracking-wide text-neutral-500">
+    <>
+      <header className="flex items-center justify-between border-b border-sidebar-border px-3 py-2.5">
+        <h2 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
           Workspace
         </h2>
-        <span className="text-[10px] text-neutral-400">
-          {artifacts.length} item{artifacts.length === 1 ? "" : "s"}
-        </span>
+        {!list.isLoading && (
+          <Badge variant="muted" className="rounded-full px-1.5 py-0 text-[10px]">
+            {artifacts.length}
+          </Badge>
+        )}
       </header>
 
-      {list.isLoading && <div className="px-3 py-4 text-xs text-neutral-500">Loading…</div>}
+      {list.isLoading && <SidebarSkeletons />}
+
       {list.error && (
-        <div className="px-3 py-4 text-xs text-red-600 dark:text-red-400">
-          {(list.error as Error).message}
-        </div>
+        <div className="px-3 py-3 text-xs text-destructive">{(list.error as Error).message}</div>
       )}
 
-      {!list.isLoading && artifacts.length === 0 ? (
-        <div className="space-y-1 px-3 py-4 text-xs text-neutral-500">
-          <p>No artifacts yet.</p>
+      {!list.isLoading && !list.error && artifacts.length === 0 && (
+        <div className="space-y-1 px-3 py-6 text-center text-xs text-muted-foreground">
+          <p className="font-medium text-foreground/70">No artifacts yet</p>
           <p>Charts and reports the agent produces will appear here.</p>
         </div>
-      ) : (
-        <ul className="flex-1 overflow-y-auto py-1">
-          {artifacts.map((a) => (
-            <li key={a.id}>
-              <button
-                type="button"
-                onClick={() =>
-                  setSelected({
-                    ...(a as ArtifactRef),
-                    // Resolve relative `/api/...` URLs against the
-                    // api-gateway origin; otherwise the browser
-                    // resolves them against the web worker and 404s.
-                    url: resolveArtifactUrl(a.url),
-                  })
-                }
-                className={[
-                  "flex w-full items-center gap-2 px-3 py-2 text-left text-xs transition",
-                  selected?.id === a.id
-                    ? "bg-neutral-200/70 dark:bg-neutral-800"
-                    : "hover:bg-neutral-200/40 dark:hover:bg-neutral-900",
-                ].join(" ")}
-                title={a.name}
-              >
-                <KindGlyph kind={a.kind} chartType={a.chartType} />
-                <span className="min-w-0 flex-1 truncate">{a.name}</span>
-                <span className="text-[10px] text-neutral-500">{formatRelative(a.createdAt)}</span>
-              </button>
-            </li>
-          ))}
-        </ul>
       )}
 
-      {selected && <Preview artifact={selected} onClose={() => setSelected(null)} />}
-    </aside>
+      {!list.isLoading && artifacts.length > 0 && (
+        <ScrollArea className="flex-1">
+          <ul className="py-1">
+            {artifacts.map((a) => (
+              <li key={a.id}>
+                <button
+                  type="button"
+                  onClick={() =>
+                    setSelected({
+                      ...(a as ArtifactRef),
+                      url: resolveArtifactUrl(a.url),
+                    })
+                  }
+                  className="flex w-full items-center gap-2 px-3 py-2 text-left text-xs transition-colors hover:bg-sidebar-accent"
+                  title={a.name}
+                >
+                  <KindGlyph kind={a.kind} chartType={a.chartType} />
+                  <span className="min-w-0 flex-1 truncate">{a.name}</span>
+                  <span className="shrink-0 text-[10px] text-muted-foreground">
+                    {formatRelative(a.createdAt)}
+                  </span>
+                </button>
+              </li>
+            ))}
+          </ul>
+        </ScrollArea>
+      )}
+
+      <ArtifactDialog artifact={selected} onClose={() => setSelected(null)} />
+    </>
+  );
+}
+
+/**
+ * Mobile-only entry point: pass this through to the chat header so the
+ * user can pop the workspace open from a button. The drawer mounts the
+ * same content as the desktop sidebar.
+ */
+export function WorkspaceSidebarBody({ chatId }: WorkspaceSidebarProps) {
+  return (
+    <div className="flex h-full flex-col">
+      <WorkspaceContent chatId={chatId} />
+    </div>
+  );
+}
+
+function SidebarSkeletons() {
+  // Five rows of compact tile skeletons matching the real artifact
+  // tile height (32px-ish row with a 14px glyph + 14px text). Keeping
+  // the exact dimensions means the layout doesn't shift when data
+  // resolves.
+  return (
+    <ul className="py-1" aria-busy="true" aria-label="Loading artifacts">
+      {Array.from({ length: 5 }).map((_, i) => (
+        <li key={i} className="flex items-center gap-2 px-3 py-2">
+          <Skeleton className="h-3.5 w-3.5 rounded-sm" />
+          <Skeleton className="h-3.5 flex-1" style={{ maxWidth: `${65 + ((i * 11) % 25)}%` }} />
+          <Skeleton className="h-3 w-6" />
+        </li>
+      ))}
+    </ul>
+  );
+}
+
+function ArtifactDialog({
+  artifact,
+  onClose,
+}: {
+  artifact: ArtifactRef | null;
+  onClose: () => void;
+}) {
+  return (
+    <Dialog open={!!artifact} onOpenChange={(o) => !o && onClose()}>
+      <DialogContent
+        hideCloseButton
+        className={cn(
+          "w-[min(92vw,900px)] max-w-[min(92vw,900px)] gap-0 overflow-hidden p-0",
+          "max-h-[90vh]"
+        )}
+      >
+        <DialogHeader className="flex flex-row items-center justify-between gap-3 border-b border-border px-5 py-3 space-y-0">
+          <DialogTitle className="truncate text-sm font-medium">
+            {artifact?.name ?? "Artifact"}
+          </DialogTitle>
+          <Button type="button" variant="ghost" size="icon-sm" onClick={onClose} aria-label="Close">
+            <X className="h-4 w-4" />
+          </Button>
+        </DialogHeader>
+        <div className="max-h-[calc(90vh-3.5rem)] overflow-auto p-5">
+          {artifact && <ArtifactViewer ref={artifact} fullWidth />}
+        </div>
+      </DialogContent>
+    </Dialog>
   );
 }
 
 function KindGlyph({ kind, chartType }: { kind: string; chartType?: string }) {
-  const cls = "h-3.5 w-3.5 shrink-0 text-neutral-500";
+  const cls = "h-3.5 w-3.5 shrink-0 text-muted-foreground";
   if (kind === "chart") {
-    if (chartType === "line") {
-      return (
-        <svg viewBox="0 0 16 16" className={cls} aria-hidden>
-          <path
-            d="M2 13L5 9 9 11 14 4"
-            stroke="currentColor"
-            strokeWidth="1.4"
-            fill="none"
-            strokeLinejoin="round"
-          />
-        </svg>
-      );
-    }
-    if (chartType === "scatter") {
-      return (
-        <svg viewBox="0 0 16 16" className={cls} aria-hidden>
-          <circle cx="4" cy="11" r="1.2" fill="currentColor" />
-          <circle cx="8" cy="6" r="1.2" fill="currentColor" />
-          <circle cx="12" cy="9" r="1.2" fill="currentColor" />
-          <circle cx="6" cy="3" r="1.2" fill="currentColor" />
-        </svg>
-      );
-    }
-    return (
-      <svg viewBox="0 0 16 16" className={cls} aria-hidden>
-        <path
-          d="M2 13V3M2 13h12"
-          stroke="currentColor"
-          strokeWidth="1.4"
-          fill="none"
-          strokeLinecap="round"
-        />
-        <path
-          d="M5 11V8M8 11V5M11 11V7"
-          stroke="currentColor"
-          strokeWidth="1.4"
-          fill="none"
-          strokeLinecap="round"
-        />
-      </svg>
-    );
+    if (chartType === "line") return <LineChart className={cls} aria-hidden />;
+    if (chartType === "scatter") return <ScatterChart className={cls} aria-hidden />;
+    return <BarChart3 className={cls} aria-hidden />;
   }
-  return (
-    <svg viewBox="0 0 16 16" className={cls} aria-hidden>
-      <path
-        d="M3 1.5h7l3 3v10h-10z"
-        stroke="currentColor"
-        strokeWidth="1.2"
-        fill="none"
-        strokeLinejoin="round"
-      />
-      <path
-        d="M10 1.5v3.5h3"
-        stroke="currentColor"
-        strokeWidth="1.2"
-        fill="none"
-        strokeLinejoin="round"
-      />
-    </svg>
-  );
-}
-
-function Preview({ artifact, onClose }: { artifact: ArtifactRef; onClose: () => void }) {
-  return (
-    <div className="border-t border-neutral-200 bg-white p-3 dark:border-neutral-800 dark:bg-neutral-950">
-      <div className="mb-2 flex items-center justify-between gap-2">
-        <span className="truncate text-xs font-medium" title={artifact.name}>
-          {artifact.name}
-        </span>
-        <button
-          type="button"
-          onClick={onClose}
-          className="text-[11px] text-neutral-500 hover:text-neutral-900 dark:hover:text-neutral-100"
-          aria-label="Close preview"
-        >
-          ✕
-        </button>
-      </div>
-      <ArtifactViewer ref={artifact} />
-    </div>
-  );
+  return <FileText className={cls} aria-hidden />;
 }
 
 function formatRelative(iso: string): string {

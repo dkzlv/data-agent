@@ -1,4 +1,6 @@
 import { createFileRoute, Link } from "@tanstack/react-router";
+import { Button } from "~/components/ui/button";
+import { ThemeToggle } from "~/components/theme-toggle";
 
 export const Route = createFileRoute("/")({
   component: HomeRoute,
@@ -6,30 +8,29 @@ export const Route = createFileRoute("/")({
 
 function HomeRoute() {
   return (
-    <main className="mx-auto flex min-h-dvh max-w-2xl flex-col justify-center gap-6 px-6 py-16">
+    <main className="relative mx-auto flex min-h-dvh max-w-2xl flex-col justify-center gap-6 px-6 py-16">
+      <div className="absolute right-4 top-4">
+        <ThemeToggle />
+      </div>
       <header className="space-y-2">
-        <p className="text-xs font-mono uppercase tracking-widest text-neutral-500">
+        <p className="font-mono text-xs uppercase tracking-widest text-muted-foreground">
           data-agent · pre-alpha
         </p>
-        <h1 className="text-4xl font-semibold tracking-tight">A BI agent for your Postgres.</h1>
-        <p className="max-w-md text-pretty text-neutral-600 dark:text-neutral-400">
+        <h1 className="text-balance text-4xl font-semibold tracking-tight sm:text-5xl">
+          A BI agent for your Postgres.
+        </h1>
+        <p className="max-w-md text-pretty text-muted-foreground">
           Connect a database. Ask questions. Get charts. Multiplayer.
         </p>
       </header>
 
-      <div className="flex gap-3">
-        <Link
-          to="/login"
-          className="rounded-md bg-neutral-900 px-4 py-2 text-sm font-medium text-white hover:bg-neutral-800 dark:bg-white dark:text-neutral-900 dark:hover:bg-neutral-200"
-        >
-          Sign in
-        </Link>
-        <Link
-          to="/app"
-          className="rounded-md border border-neutral-300 px-4 py-2 text-sm font-medium hover:bg-neutral-100 dark:border-neutral-700 dark:hover:bg-neutral-800"
-        >
-          Open app
-        </Link>
+      <div className="flex flex-wrap gap-3">
+        <Button asChild>
+          <Link to="/login">Sign in</Link>
+        </Button>
+        <Button asChild variant="outline">
+          <Link to="/app">Open app</Link>
+        </Button>
       </div>
     </main>
   );

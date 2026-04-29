@@ -1,7 +1,9 @@
 import { createFileRoute, Link } from "@tanstack/react-router";
 import { useQuery } from "@tanstack/react-query";
+import { ChevronLeft } from "lucide-react";
 import { ChatRoom } from "~/components/ChatRoom";
-import { WorkspaceSidebar } from "~/components/WorkspaceSidebar";
+import { Skeleton } from "~/components/ui/skeleton";
+import { Alert, AlertDescription } from "~/components/ui/alert";
 import { chatsApi } from "~/lib/api";
 
 export const Route = createFileRoute("/app/chats/$chatId")({
@@ -22,23 +24,85 @@ function ChatDetail() {
       <p className="px-1 text-xs">
         <Link
           to="/app"
-          className="text-neutral-500 hover:text-neutral-900 dark:hover:text-neutral-100"
+          className="inline-flex items-center gap-1 text-muted-foreground hover:text-foreground"
         >
-          ← All chats
+          <ChevronLeft className="h-3 w-3" />
+          All chats
         </Link>
       </p>
-      {chat.isLoading && <p className="text-sm text-neutral-500">Loading…</p>}
+
+      {chat.isLoading && <ChatPageSkeleton />}
+
       {chat.error && (
-        <p className="text-sm text-red-600 dark:text-red-400">{(chat.error as Error).message}</p>
+        <Alert variant="destructive">
+          <AlertDescription>{(chat.error as Error).message}</AlertDescription>
+        </Alert>
       )}
+
       {chat.data && (
-        <div className="flex flex-1 gap-0 overflow-hidden">
-          <div className="mx-auto flex max-w-4xl flex-1 flex-col px-1">
-            <ChatRoom chatId={chatId} title={chat.data.chat.title} members={chat.data.members} />
-          </div>
-          <WorkspaceSidebar chatId={chatId} />
+        <div className="mx-auto w-full max-w-6xl flex-1 overflow-hidden">
+          <ChatRoom chatId={chatId} title={chat.data.chat.title} members={chat.data.members} />
         </div>
       )}
+    </div>
+  );
+}
+
+function ChatPageSkeleton() {
+  // Mirrors the resolved layout: page header (title + actions row),
+  // message list panel, composer. Heights match the real component
+  // (h-[calc(100dvh-7rem)] container, ~68px header, flex-1 list,
+  // composer ~5rem). Sized to match, so the layout doesn't pop when
+  // the chat resolves.
+  return (
+    <div
+      className="mx-auto flex h-[calc(100dvh-7rem)] w-full max-w-6xl flex-col gap-3"
+      aria-busy="true"
+      aria-label="Loading chat"
+    >
+      <div className="flex items-center justify-between gap-3 border-b border-border pb-3">
+        <Skeleton className="h-7 w-56" />
+        <div className="flex gap-2">
+          <Skeleton className="h-8 w-20" />
+        </div>
+      </div>
+      <div className="flex flex-1 gap-0 overflow-hidden">
+        <div className="flex min-w-0 flex-1 flex-col gap-3">
+          <div className="flex-1 space-y-4 rounded-lg border border-border bg-card p-4">
+            <div className="flex justify-end">
+              <Skeleton className="h-9 w-2/3 rounded-2xl sm:w-1/2" />
+            </div>
+            <div className="flex justify-start">
+              <Skeleton className="h-16 w-3/4 rounded-2xl sm:w-2/3" />
+            </div>
+            <div className="flex justify-start">
+              <Skeleton className="h-12 w-1/2 rounded-2xl" />
+            </div>
+          </div>
+          <div className="flex items-end gap-2">
+            <Skeleton className="h-12 flex-1" />
+            <Skeleton className="h-12 w-20" />
+          </div>
+        </div>
+        <aside className="hidden h-full w-72 shrink-0 flex-col border-l border-border bg-sidebar md:flex">
+          <div className="flex items-center justify-between border-b border-sidebar-border px-3 py-2.5">
+            <Skeleton className="h-3 w-20" />
+            <Skeleton className="h-4 w-6 rounded-full" />
+          </div>
+          <ul className="py-1">
+            {Array.from({ length: 5 }).map((_, i) => (
+              <li key={i} className="flex items-center gap-2 px-3 py-2">
+                <Skeleton className="h-3.5 w-3.5 rounded-sm" />
+                <Skeleton
+                  className="h-3.5 flex-1"
+                  style={{ maxWidth: `${65 + ((i * 11) % 25)}%` }}
+                />
+                <Skeleton className="h-3 w-6" />
+              </li>
+            ))}
+          </ul>
+        </aside>
+      </div>
     </div>
   );
 }

@@ -1,6 +1,10 @@
 import { createFileRoute, Link } from "@tanstack/react-router";
 import { useState } from "react";
 import { authClient } from "~/lib/auth-client";
+import { Button } from "~/components/ui/button";
+import { Input } from "~/components/ui/input";
+import { Label } from "~/components/ui/label";
+import { Alert, AlertDescription, AlertTitle } from "~/components/ui/alert";
 
 export const Route = createFileRoute("/login")({
   component: LoginRoute,
@@ -43,34 +47,30 @@ function LoginRoute() {
   }
 
   return (
-    <main className="mx-auto flex min-h-dvh max-w-md flex-col justify-center gap-8 px-6">
+    <main className="mx-auto flex min-h-dvh max-w-md flex-col justify-center gap-8 px-6 py-12">
       <header className="space-y-2">
-        <p className="font-mono text-xs uppercase tracking-widest text-neutral-500">
+        <p className="font-mono text-xs uppercase tracking-widest text-muted-foreground">
           <Link to="/" className="hover:underline">
             ← data-agent
           </Link>
         </p>
         <h1 className="text-2xl font-semibold tracking-tight">Sign in with email</h1>
-        <p className="text-sm text-neutral-600 dark:text-neutral-400">
-          We'll send a one-time link. No password.
-        </p>
+        <p className="text-sm text-muted-foreground">We'll send a one-time link. No password.</p>
       </header>
 
       {status === "sent" ? (
-        <div className="rounded-lg border border-neutral-200 bg-neutral-50 p-4 text-sm dark:border-neutral-800 dark:bg-neutral-900">
-          <p className="font-medium">Check your inbox.</p>
-          <p className="mt-1 text-neutral-600 dark:text-neutral-400">
+        <Alert>
+          <AlertTitle>Check your inbox</AlertTitle>
+          <AlertDescription>
             We sent a sign-in link to <span className="font-mono">{email}</span>. It expires in 10
             minutes.
-          </p>
-        </div>
+          </AlertDescription>
+        </Alert>
       ) : (
         <form onSubmit={handleSubmit} className="space-y-4">
-          <div className="space-y-1.5">
-            <label htmlFor="email" className="block text-sm font-medium">
-              Email
-            </label>
-            <input
+          <div className="space-y-2">
+            <Label htmlFor="email">Email</Label>
+            <Input
               id="email"
               type="email"
               autoFocus
@@ -79,19 +79,16 @@ function LoginRoute() {
               value={email}
               onChange={(e) => setEmail(e.target.value)}
               placeholder="you@example.com"
-              className="w-full rounded-md border border-neutral-300 bg-white px-3 py-2 text-sm focus:border-neutral-900 focus:outline-none focus:ring-2 focus:ring-neutral-900/10 dark:border-neutral-700 dark:bg-neutral-950 dark:focus:border-neutral-200 dark:focus:ring-neutral-200/10"
               disabled={status === "sending"}
             />
           </div>
-          <button
-            type="submit"
-            disabled={status === "sending" || !email}
-            className="w-full rounded-md bg-neutral-900 px-3 py-2 text-sm font-medium text-white hover:bg-neutral-800 disabled:opacity-50 dark:bg-white dark:text-neutral-900 dark:hover:bg-neutral-200"
-          >
+          <Button type="submit" disabled={status === "sending" || !email} className="w-full">
             {status === "sending" ? "Sending…" : "Send sign-in link"}
-          </button>
+          </Button>
           {status === "error" && (
-            <p className="text-sm text-red-600 dark:text-red-400">{errorMsg}</p>
+            <Alert variant="destructive">
+              <AlertDescription>{errorMsg}</AlertDescription>
+            </Alert>
           )}
         </form>
       )}
