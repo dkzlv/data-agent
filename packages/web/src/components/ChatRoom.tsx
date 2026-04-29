@@ -17,7 +17,6 @@
 import type { FormEvent, KeyboardEvent } from "react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { UIMessage } from "ai";
-import { decodeAgentError } from "@data-agent/shared";
 import { useAgent } from "agents/react";
 import { useAgentChat } from "@cloudflare/ai-chat/react";
 import { useQueryClient } from "@tanstack/react-query";
@@ -43,7 +42,7 @@ import { CodeBlock } from "./CodeBlock";
 import { WorkspaceSidebar, WorkspaceSidebarBody, useChatArtifacts } from "./WorkspaceSidebar";
 import { AppMobileNavTrigger } from "~/routes/app";
 import { getChatHost } from "~/lib/chat-host";
-import { type FriendlyError, toFriendlyError } from "~/lib/agent-error";
+import { shouldClearStaleError, type FriendlyError, toFriendlyError } from "~/lib/agent-error";
 import { Button } from "~/components/ui/button";
 import { InputGroup, InputGroupAddon, InputGroupButton } from "~/components/ui/input-group";
 import { Skeleton } from "~/components/ui/skeleton";
@@ -279,54 +278,33 @@ export function ChatRoom({
   const isTurnInFlight =
     chat.status === "streaming" || chat.status === "submitted" || chat.isServerStreaming;
 
-  // Clear stale generic stream errors after a clean turn.
+  // Clear stale generic stream errors when the assistant produced
+  // a usable answer despite the WS transport reporting a stream
+  // error. See `shouldClearStaleError` for the full rationale —
+  // tl;dr a single `data.error: true` chunk parks `chat.status` in
+  // `"error"` even when the server-side audit says
+  // `turn.complete status="completed"` and the message store holds
+  // a complete response (chat 3a76a225, task bf7ab7).
   //
-  // Scenario (papercut 247274): user refreshes the tab mid-turn. The
-  // server's resumable-stream re-broadcasts the buffered chunks; if
-  // any non-fatal accumulator chunk had `error: true` (e.g. a
-  // mid-stream warning surfaced by the AI SDK), the @cloudflare/ai-chat
-  // transport treats it as a terminal stream error — even though the
-  // server kept streaming and ultimately produced a complete answer.
-  // The user sees the assistant's full response AND a spurious
-  // "Something went wrong" banner.
-  //
-  // Heuristic: only clear *unrecognized* errors (the generic
-  // "Something went wrong" fallback). Anything decoded via
-  // `decodeAgentError` — rate limits, SQL errors, sandbox timeouts —
-  // is a real failure the chat-agent intentionally surfaced, so the
-  // banner stays. We also gate on `status === "ready"` (turn fully
-  // settled) and the presence of a completed assistant message —
-  // without those, an in-flight or empty turn might briefly look
-  // "complete" and hide a legitimate error.
-  const chatStatus = chat.status;
+  // Earlier this also gated on `chatStatus === "ready"`. Dropped:
+  // the gate never fires on the bug path (status sticks at
+  // `"error"`), and trusting the message-store shape is the only
+  // signal that survives the SDK's status FSM. Decoded (known-code)
+  // errors are still preserved by the helper.
   const chatError = chat.error;
   const chatMessages = chat.messages;
   const chatClearError = chat.clearError;
   useEffect(() => {
-    if (!chatError) return;
-    if (chatStatus !== "ready") return;
-    // Preserve known-code errors — those are anticipated server-side
-    // failures the user should see.
-    if (chatError.message && decodeAgentError(chatError.message)) return;
     const last = chatMessages[chatMessages.length - 1] as UIMessage | undefined;
-    if (!last || last.role !== "assistant") return;
-    const parts = (last.parts as unknown as UIPart[]) ?? [];
-    const hasUsableContent = parts.some((p) => {
-      if (p.type === "text" && typeof p.text === "string" && p.text.trim().length > 0) {
-        return true;
-      }
-      // Completed tool calls also count — a turn that fetched data
-      // and emitted an artifact is a usable answer even without a
-      // wrap-up text part.
-      if (p.type?.startsWith("tool-") && p.state === "output-available") {
-        return true;
-      }
-      return false;
-    });
-    if (hasUsableContent) {
+    if (
+      shouldClearStaleError({
+        error: chatError ?? null,
+        lastAssistant: last ? { role: last.role, parts: last.parts as unknown as UIPart[] } : null,
+      })
+    ) {
       chatClearError();
     }
-  }, [chatError, chatStatus, chatMessages, chatClearError]);
+  }, [chatError, chatMessages, chatClearError]);
 
   // The composer itself is only fully disabled until the WS is ready
   // (i.e. you can't type into a not-yet-connected chat). While a turn
