@@ -14,6 +14,7 @@ import { buildSystemPrompt, type ChatContext } from "./system-prompt";
 import { artifactTools, chartTools } from "./tools/artifact-tools";
 import { dbTools } from "./tools/db-tools";
 import { vegaLiteTools } from "./tools/vega-lite-tools";
+import { wrapCodemodeTool } from "./tools/codemode-wrap";
 import { extractFirstUserText, summarizeAndPersistTitle } from "./title-summarizer";
 import { readSecret, type Env } from "./env";
 
@@ -839,7 +840,7 @@ export class ChatAgent extends Think<Env> {
       globalOutbound: null,
     });
     const host = this._dataDbHost;
-    const codemode = createCodeTool({
+    const rawCodemode = createCodeTool({
       tools: [
         stateTools(this.workspace),
         dbTools(() => getDataDb(host)),
@@ -848,6 +849,41 @@ export class ChatAgent extends Think<Env> {
         vegaLiteTools(),
       ],
       executor,
+    });
+    // Resilience wrapper:
+    //   - Sandbox throws (unknown capability, runtime error, fetch
+    //     blocked, etc.) become structured `{ error, recoverable }`
+    //     results so the model can adapt instead of aborting the
+    //     whole turn (chat 236a4117 was a real instance: third
+    //     codemode call hung in input-available state and the user
+    //     got the generic "Something went wrong" banner with no
+    //     recovery path).
+    //   - Tool results larger than DEFAULT_RESULT_CHAR_CAP (5,000
+    //     JSON chars) are replaced with a truncation marker so an
+    //     unexpectedly-large `db.query` response doesn't poison the
+    //     next turn's input budget or balloon the persisted message
+    //     row.
+    const codemode = wrapCodemodeTool(rawCodemode, {
+      onEvent: (ev) => {
+        if (ev.kind === "truncated") {
+          logEvent({
+            event: "chat.codemode_result_truncated",
+            level: "warn",
+            chatId: this.name,
+            turnId: this._turnId,
+            originalChars: ev.originalChars,
+            cap: ev.cap,
+          });
+        } else if (ev.kind === "sandbox_error") {
+          logEvent({
+            event: "chat.codemode_sandbox_error",
+            level: "warn",
+            chatId: this.name,
+            turnId: this._turnId,
+            message: ev.message,
+          });
+        }
+      },
     });
     return { codemode };
   }
