@@ -551,7 +551,7 @@ Workers AI (title summarizer) traffic on the same gateway.
 **Token.** You need a Cloudflare API token with `Account → AI
 Gateway → Read` scoped to the production CF account. Create at
 https://dash.cloudflare.com/profile/api-tokens. Don't commit it; we
-fetch from `.dev.vars` (`CLOUDFLARE_API_TOKEN`) or paste it ad-hoc
+fetch from environment (`CF_AIG_TOKEN`) or paste it ad-hoc
 into a one-off script.
 
 **Endpoints** (gateway id: `data-agent`):
