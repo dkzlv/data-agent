@@ -44,11 +44,33 @@ function formatLocalTime(d: Date): string {
 
 /**
  * Translate a raw Error message (or unknown value) into a banner-ready
- * `FriendlyError`. Returns `null` if the input is empty/undefined —
- * the caller hides the banner in that case.
+ * `FriendlyError`. Returns `null` if the input is empty/undefined OR
+ * if the "error" is actually a benign abort (user navigated away, WS
+ * dropped mid-stream, server-side resume in progress) — the caller
+ * hides the banner in that case.
+ *
+ * Why aborts shouldn't show a banner: the partial assistant message
+ * is still persisted server-side, the resume protocol picks up where
+ * we left off, and showing "Something went wrong" on what's actually
+ * a graceful pause confuses users (they think the answer was lost
+ * when in reality the server has it).
  */
 export function toFriendlyError(raw: unknown): FriendlyError | null {
   if (raw == null) return null;
+
+  // Suppress benign aborts (`AbortError` from the AI SDK's stream
+  // controller, or a `DOMException` named `AbortError` from a
+  // user-initiated cancel). The chat will reconnect via the agents
+  // SDK's resume protocol; no banner needed.
+  if (
+    raw instanceof Error &&
+    (raw.name === "AbortError" ||
+      raw.message === "BodyStreamBuffer was aborted" ||
+      raw.message.toLowerCase().includes("aborted"))
+  ) {
+    return null;
+  }
+
   const message = raw instanceof Error ? raw.message : typeof raw === "string" ? raw : String(raw);
   if (!message) return null;
 
