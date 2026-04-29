@@ -50,8 +50,7 @@
   "services": [
     {
       "binding": "CHAT_AGENT",
-      "service": "data-agent-chat-agent",
-      "entrypoint": "ChatAgent"
+      "service": "data-agent-chat-agent"
     }
   ]
 

@@ -11,10 +11,32 @@
  * Run:
  *   pnpm --filter @data-agent/chat-agent exec tsx scripts/spike.ts
  */
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import { AgentClient } from "agents/client";
+import { mintChatToken } from "@data-agent/shared";
 
 const ENDPOINT = process.env.SPIKE_ENDPOINT ?? "data-agent-chat-agent.dkzlv.workers.dev";
 const CHAT_ID = process.env.SPIKE_CHAT_ID ?? `spike-${Date.now()}`;
+
+// Pull the signing key from .dev.vars so the spike can mint chat tokens
+// without going through the api-gateway. In CI we'd set the env var directly.
+function loadSigningKey(): string {
+  if (process.env.INTERNAL_JWT_SIGNING_KEY) return process.env.INTERNAL_JWT_SIGNING_KEY;
+  const candidates = [join(process.cwd(), ".dev.vars"), join(process.cwd(), "../../.dev.vars")];
+  for (const path of candidates) {
+    try {
+      const text = readFileSync(path, "utf8");
+      const m = text.match(/^INTERNAL_JWT_SIGNING_KEY="?([^"\n]+)"?/m);
+      if (m) return m[1]!;
+    } catch {
+      // file not present, try next
+    }
+  }
+  throw new Error("INTERNAL_JWT_SIGNING_KEY not found in env or .dev.vars");
+}
+
+const SIGNING_KEY = loadSigningKey();
 
 console.log(`spike: wss://${ENDPOINT} chat=${CHAT_ID}\n`);
 
@@ -22,11 +44,21 @@ interface RPC {
   healthcheck(): Promise<{ ok: boolean; agent: string; chatId: string; time: string }>;
 }
 
+async function mintToken(): Promise<string> {
+  return mintChatToken(SIGNING_KEY, {
+    userId: "spike-user",
+    chatId: CHAT_ID,
+    tenantId: "spike-tenant",
+  });
+}
+
 async function withClient<T>(fn: (c: AgentClient<RPC>) => Promise<T>): Promise<T> {
+  const token = await mintToken();
   const c = new AgentClient<RPC>({
     host: ENDPOINT,
     agent: "ChatAgent",
     name: CHAT_ID,
+    query: { token },
   });
   await new Promise<void>((res, rej) => {
     const t = setTimeout(() => rej(new Error("connect timeout")), 10_000);

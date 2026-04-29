@@ -4,6 +4,7 @@ import { logger } from "hono/logger";
 import { createAuth } from "./auth";
 import { chatsRouter } from "./routes/chats";
 import { dbProfilesRouter } from "./routes/db-profiles";
+import { wsRouter } from "./routes/ws";
 import type { RequestSession } from "./session";
 import type { Env } from "./env";
 
@@ -44,9 +45,9 @@ app.on(["GET", "POST"], "/api/auth/*", async (c) => {
 // API surface — handlers land in later subtasks.
 const api = new Hono<{ Bindings: Bindings; Variables: Variables }>();
 
-// WS upgrade route is mounted before the CRUD router so it takes precedence.
-// Real impl in subtask e1a679.
-api.get("/chats/:id/ws", (c) => c.json({ todo: "e1a679", id: c.req.param("id") }, 501));
+// WS upgrade route is mounted before the CRUD router so the `/:id/ws` path
+// is matched by the upgrade handler instead of the chat-by-id GET.
+api.route("/", wsRouter);
 
 api.route("/chats", chatsRouter);
 api.route("/db-profiles", dbProfilesRouter);
