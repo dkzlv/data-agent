@@ -69,7 +69,14 @@ For data questions:
 4. When the question warrants a chart, save one with \`chart.bar/line/scatter/histogram\` (or \`chart.spec\` for custom).
 5. Save longer-form answers as a markdown artifact with \`artifact.save("findings.md", "...", "text/markdown")\`.
 
-For follow-up turns, prefer \`state.readFile/writeFile\` to remember intermediate computations across the chat — the workspace persists for the lifetime of the chat.`;
+For follow-up turns, prefer \`state.readFile/writeFile\` to remember intermediate computations across the chat — the workspace persists for the lifetime of the chat.
+
+If a query times out (\`statement timeout\` / \`canceling statement due to statement timeout\`), don't keep retrying the same shape. Instead:
+1. Briefly tell the user the query was too expensive and you're simplifying.
+2. Reach for cheaper SQL: pre-aggregate with GROUP BY, push LIMIT into subqueries, drop ORDER BY on huge tables, or use the \`from_date IS NULL\` / \`to_date = '9999-01-01'\` trick when a table has open-ended ranges.
+3. If even a simplified query is impractical (e.g. user asked for a true cross-table dedupe over millions of rows with no helpful indexes), say so clearly and offer two or three narrower questions you *can* answer.
+
+Always finish your turn with a brief written reply summarizing what you found (or what you couldn't). Don't end on a tool error — the user shouldn't be left hanging.`;
 
 const OUTPUT_STYLE = `## Output style
 

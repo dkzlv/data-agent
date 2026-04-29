@@ -8,6 +8,7 @@ import type { LanguageModel, ToolSet } from "ai";
 import { createWorkersAI } from "workers-ai-provider";
 import { hashSql, safePayload } from "@data-agent/shared";
 import { auditFromAgent } from "./audit";
+import { checkRateLimits, RateLimitError } from "./rate-limits";
 import { getDataDb, resetDataDb, type AgentLike, type CachedHandle } from "./data-db";
 import { buildSystemPrompt, type ChatContext } from "./system-prompt";
 import { artifactTools, chartTools } from "./tools/artifact-tools";
@@ -132,8 +133,26 @@ export class ChatAgent extends Think<Env> {
       }
     }
 
-    // Audit (1dd311) — record turn.start. Best-effort, never blocks.
     const tenantId = this._cachedChatContext?.tenantId;
+
+    // Rate-limit gate (947c38) — runs *before* the audit insert so
+    // the count reflects strictly previous turns. We only check when
+    // we know the tenantId; un-resolvable chats have a different
+    // failure mode (the LLM call itself will fail).
+    if (tenantId) {
+      const decision = await this.checkRateLimits(tenantId);
+      if (!decision.ok) {
+        // Throwing inside `beforeTurn` propagates to Think's error
+        // pipeline which calls our `onChatError` and surfaces a
+        // turn.error audit row. We deliberately use a custom error
+        // class so the UX layer (subtask 2f89ff) can render a
+        // dedicated "you've hit your daily/hourly limit" message
+        // instead of the generic agent-error string.
+        throw new RateLimitError(decision.code, decision.max, decision.windowMs, decision.current);
+      }
+    }
+
+    // Audit (1dd311) — record turn.start. Best-effort, never blocks.
     if (tenantId) {
       this.ctx.waitUntil(
         auditFromAgent(this.env, {
@@ -148,6 +167,30 @@ export class ChatAgent extends Think<Env> {
     }
 
     return { system: buildSystemPrompt(this._cachedChatContext) };
+  }
+
+  /**
+   * Run the rate-limit policy. Opens a short-lived control-plane
+   * connection to query `audit_log` counts. Cached via the same
+   * lazy-resolve pattern as the chat context — we always use the
+   * authoritative DB rather than DO storage so the limit is
+   * consistent across replicas / restarts.
+   */
+  private async checkRateLimits(tenantId: string) {
+    const { createDbClient } = await import("@data-agent/db");
+    const url = await readSecret(this.env.CONTROL_PLANE_DB_URL);
+    const { db, client } = createDbClient({ url, max: 1 });
+    try {
+      return await checkRateLimits(db, {
+        tenantId,
+        userId: this._currentTurnUserId,
+        chatId: this.name,
+      });
+    } finally {
+      // Connection close runs in waitUntil so we don't block the
+      // turn on it. The pool was opened with max=1, no leakage.
+      this.ctx.waitUntil(client.end({ timeout: 1 }).catch(() => {}));
+    }
   }
 
   /**
@@ -474,6 +517,58 @@ export class ChatAgent extends Think<Env> {
       agent: "ChatAgent",
       chatId: this.name,
       time: new Date().toISOString(),
+    };
+  }
+
+  /**
+   * Debug RPC — dumps the agent's persisted message history + a few
+   * pieces of runtime state so a chat that "looks empty" to the user
+   * can be inspected from a script. Returns a JSON-serializable shape
+   * truncated to keep response size reasonable.
+   *
+   * Intentionally keeps the contract loose (returns `unknown[]`) so we
+   * can iterate on the dump shape without breaking spike tooling.
+   */
+  /**
+   * Debug RPC — wipe the persisted message history for this chat. Use
+   * to recover from a stuck/corrupted assistant message (e.g. the
+   * model crashed mid-stream and left a `state: streaming` part). The
+   * client UI replays from this DO's SQL on every reconnect, so after
+   * this call a fresh WS connect shows an empty chat.
+   *
+   * Returns the number of messages removed so callers can sanity-check.
+   */
+  @callable()
+  async debugClearMessages(): Promise<{ ok: true; removed: number }> {
+    const before = this.getMessages?.() ?? [];
+    this.clearMessages?.();
+    return { ok: true, removed: Array.isArray(before) ? before.length : 0 };
+  }
+
+  @callable()
+  async debugDump(opts?: { limit?: number }): Promise<{
+    chatId: string;
+    persistedMessageCount: number;
+    messages: unknown[];
+    cachedChatContext: ChatContext | undefined;
+    currentTurnUserId: string | null;
+    presence: { userId: string; joinedAt: number }[];
+  }> {
+    const limit = Math.min(opts?.limit ?? 50, 200);
+    const all = this.getMessages?.() ?? [];
+    const tail = Array.isArray(all) ? all.slice(-limit) : [];
+    type PresenceState = { userId: string; joinedAt: number };
+    const presence: { userId: string; joinedAt: number }[] = [];
+    for (const conn of this.getConnections<PresenceState>()) {
+      if (conn.state) presence.push({ userId: conn.state.userId, joinedAt: conn.state.joinedAt });
+    }
+    return {
+      chatId: this.name,
+      persistedMessageCount: Array.isArray(all) ? all.length : 0,
+      messages: tail,
+      cachedChatContext: this._cachedChatContext,
+      currentTurnUserId: this._currentTurnUserId,
+      presence,
     };
   }
 

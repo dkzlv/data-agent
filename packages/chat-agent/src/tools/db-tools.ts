@@ -26,7 +26,24 @@ import type { DataDbContext } from "../data-db";
 
 const DEFAULT_ROW_LIMIT = 5_000;
 const DEFAULT_BYTE_LIMIT = 4 * 1024 * 1024;
-const STATEMENT_TIMEOUT_MS = 15_000;
+/**
+ * Statement timeout for `db.query`. Sized to fit comfortably inside
+ * the sandbox's 30 s wall-clock with headroom for serialization,
+ * pool connect, and bytecount enforcement. Originally 15 s, bumped
+ * to 25 s after a debug session showed that legit BI queries on
+ * cold-started Neon (e.g. `DISTINCT ON (employee_id) … ORDER BY
+ * employee_id, from_date DESC` over 2.8M-row salary tables) reliably
+ * exceed 15 s on first execution, even though the same query runs
+ * sub-second once the relevant pages are cached.
+ *
+ * 25 s is the maximum we can afford here:
+ *   sandbox 30s cap
+ *   - ~2 s for pool connect on cold Neon
+ *   - ~1 s for serialization + truncation checks
+ *   - ~1 s safety margin for waitUntil-based teardown
+ *   = 25 s budget for the query itself
+ */
+const STATEMENT_TIMEOUT_MS = 25_000;
 
 const READONLY_LEADING_KEYWORDS = new Set([
   "SELECT",
