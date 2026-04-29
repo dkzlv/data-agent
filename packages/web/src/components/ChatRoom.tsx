@@ -19,6 +19,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { UIMessage } from "ai";
 import { useAgent } from "agents/react";
 import { useAgentChat } from "@cloudflare/ai-chat/react";
+import { useQueryClient } from "@tanstack/react-query";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { Send, ChevronRight, ChartBar, Users } from "lucide-react";
@@ -53,6 +54,17 @@ interface ChatRoomProps {
 export function ChatRoom({ chatId, title, members = [] }: ChatRoomProps): React.ReactElement {
   const host = useMemo(() => getChatHost(), []);
   const basePath = `api/chats/${encodeURIComponent(chatId)}/ws`;
+  const qc = useQueryClient();
+  // Live title pushed by the chat-agent's auto-summarizer (subtask
+  // 16656a). When the broadcast arrives we both update local state
+  // (so the header re-renders immediately) AND invalidate the chats
+  // list query so the sidebar / index page reflect the new title.
+  // `undefined` = no live update yet → fall back to the prop.
+  const [liveTitle, setLiveTitle] = useState<string | undefined>(undefined);
+  // Reset when navigating between chats.
+  useEffect(() => {
+    setLiveTitle(undefined);
+  }, [chatId]);
 
   // Diagnostic: surface the WS target in the browser console so a
   // debug session can immediately verify which host the agents SDK is
@@ -162,6 +174,8 @@ export function ChatRoom({ chatId, title, members = [] }: ChatRoomProps): React.
         const parsed = JSON.parse(raw) as {
           type?: string;
           users?: { userId: string; joinedAt: number }[];
+          chatId?: string;
+          title?: string;
         };
         if (parsed.type === "data_agent_presence" && Array.isArray(parsed.users)) {
           setPresence(parsed.users);
@@ -169,13 +183,21 @@ export function ChatRoom({ chatId, title, members = [] }: ChatRoomProps): React.
         if (parsed.type === "cf_agent_messages") {
           setHasInitialSync(true);
         }
+        // Auto-title broadcast (subtask 16656a). Update the header
+        // immediately and invalidate the chats list + per-chat metadata
+        // so all surfaces reflect the new title.
+        if (parsed.type === "data_agent_title" && typeof parsed.title === "string") {
+          setLiveTitle(parsed.title);
+          qc.invalidateQueries({ queryKey: ["chats"] });
+          qc.invalidateQueries({ queryKey: ["chat", chatId] });
+        }
       } catch {
         // not our message
       }
     };
     agent.addEventListener("message", onMsg);
     return () => agent.removeEventListener("message", onMsg);
-  }, [agent]);
+  }, [agent, qc, chatId]);
 
   // Safety net: if the SDK uses a different sync envelope, fall back
   // to "WS open + 600ms grace" so we never get stuck on the skeleton.
@@ -185,11 +207,15 @@ export function ChatRoom({ chatId, title, members = [] }: ChatRoomProps): React.
     return () => clearTimeout(t);
   }, [wsOpen, hasInitialSync]);
 
+  const displayedTitle = liveTitle ?? title;
+
   return (
     <div className="flex h-[calc(100dvh-7rem)] flex-col gap-3">
-      {title ? (
+      {displayedTitle ? (
         <header className="flex items-center justify-between gap-3 border-b border-border pb-3">
-          <h1 className="truncate text-lg font-semibold tracking-tight sm:text-xl">{title}</h1>
+          <h1 className="truncate text-lg font-semibold tracking-tight sm:text-xl">
+            {displayedTitle}
+          </h1>
           <div className="flex items-center gap-2 text-xs text-muted-foreground">
             <PresenceBadges users={presence} directory={memberDirectory} />
             <MembersPopover members={members} active={presence} />

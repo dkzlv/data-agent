@@ -296,6 +296,9 @@ in the dashboard. Stable event names (so saved queries don't break):
 | `chat.turn_error` | chat-agent | onChatError |
 | `chat.ws.connect` | chat-agent | onConnect |
 | `chat.ws.close` | chat-agent | onClose |
+| `chat.title_summarize_start` | chat-agent | first user message → fire-and-forget summarizer enters |
+| `chat.title_summarized` | chat-agent | auto-title saved + broadcast |
+| `chat.title_summarize_failed` | chat-agent | model err / sanitize reject / race lost / persist err |
 | `ws.upgrade` / `ws.upgrade_response` / `ws.upgrade_failed` | api-gateway | WS reverse-proxy boundary |
 
 Every chat-agent event carries a `turnId` (for in-turn events) or
@@ -311,9 +314,9 @@ audit row never blocks a user request — but it does emit an
 `audit.write_failed` log event so it's not silent.
 
 Actions: `chat.create`, `chat.delete`, `chat.member.*`,
-`db_profile.create`, `db_profile.delete`, `chat.ws.connect`,
-`turn.start`, `turn.complete`, `turn.error`, `db.query`,
-`tool.<name>`, `artifact.read`.
+`chat.title.auto`, `db_profile.create`, `db_profile.delete`,
+`chat.ws.connect`, `turn.start`, `turn.complete`, `turn.error`,
+`db.query`, `tool.<name>`, `artifact.read`.
 
 `audit_log` doubles as the rate-limit counter store
 (`turn.start` rows). Acceptable for alpha; post-alpha move to KV.
@@ -542,6 +545,15 @@ project. Don't undo without reading the relevant context.
 14. **Stop-when-answered prompt nudge.** Kimi K2.6 likes to keep
     iterating; prompt explicitly says "after an artifact saves,
     write the final reply immediately."
+15. **Inline `waitUntil` for title summarization** (subtask 16656a).
+    Auto-titling fires from `beforeTurn` on the first user message
+    via `ctx.waitUntil(summarizeAndPersistTitle(...))` — same pattern
+    as audit/cost writes. We considered a CF Queue + consumer worker
+    but the win (decoupled retry, separate quota) doesn't justify a
+    new binding for a one-off, best-effort, single-call workload.
+    Race-guarded persist (`WHERE title_auto_generated = true AND
+    title = 'New chat'`) means a manual rename always wins, so
+    losing the model call is a no-op.
 
 ## Anti-patterns to avoid
 

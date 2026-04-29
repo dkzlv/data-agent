@@ -4,7 +4,6 @@ import { useState } from "react";
 import { ChevronRight, Plus } from "lucide-react";
 import { chatsApi, dbProfilesApi } from "~/lib/api";
 import { Button } from "~/components/ui/button";
-import { Input } from "~/components/ui/input";
 import { Label } from "~/components/ui/label";
 import {
   Dialog,
@@ -88,7 +87,10 @@ function NewChatDialog() {
   const qc = useQueryClient();
   const navigate = useNavigate();
   const [open, setOpen] = useState(false);
-  const [title, setTitle] = useState("");
+  // No `title` state — the chat starts as "New chat" and the
+  // chat-agent renames it from the first user message (subtask 16656a).
+  // Removed the manual title input to make creation a single-click
+  // (or single-select-and-click) flow.
   const [dbProfileId, setDbProfileId] = useState<string>("none");
 
   const profiles = useQuery({
@@ -100,13 +102,11 @@ function NewChatDialog() {
   const create = useMutation({
     mutationFn: () =>
       chatsApi.create({
-        title: title.trim() || "Untitled chat",
         dbProfileId: dbProfileId === "none" ? undefined : dbProfileId,
       }),
     onSuccess: ({ chat }) => {
       qc.invalidateQueries({ queryKey: ["chats"] });
       setOpen(false);
-      setTitle("");
       setDbProfileId("none");
       navigate({ to: "/app/chats/$chatId", params: { chatId: chat.id } });
     },
@@ -124,7 +124,8 @@ function NewChatDialog() {
         <DialogHeader>
           <DialogTitle>New chat</DialogTitle>
           <DialogDescription>
-            Pick a database to attach. You can create a chat without one and attach later.
+            Pick a database to attach. You can create a chat without one and attach later. We'll
+            auto-title the chat from your first message.
           </DialogDescription>
         </DialogHeader>
         <form
@@ -134,16 +135,6 @@ function NewChatDialog() {
           }}
           className="space-y-4"
         >
-          <div className="space-y-2">
-            <Label htmlFor="title">Title</Label>
-            <Input
-              id="title"
-              autoFocus
-              value={title}
-              onChange={(e) => setTitle(e.target.value)}
-              placeholder="e.g. Sales analysis"
-            />
-          </div>
           <div className="space-y-2">
             <Label htmlFor="db">Database</Label>
             <Select value={dbProfileId} onValueChange={setDbProfileId}>

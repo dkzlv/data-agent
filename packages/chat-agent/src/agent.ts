@@ -14,6 +14,7 @@ import { buildSystemPrompt, type ChatContext } from "./system-prompt";
 import { artifactTools, chartTools } from "./tools/artifact-tools";
 import { dbTools } from "./tools/db-tools";
 import { vegaLiteTools } from "./tools/vega-lite-tools";
+import { extractFirstUserText, summarizeAndPersistTitle } from "./title-summarizer";
 import { readSecret, type Env } from "./env";
 
 /**
@@ -293,6 +294,55 @@ export class ChatAgent extends Think<Env> {
       // correlate `onClose` (drops) with in-flight turns later.
       connections: countConnections(this),
     });
+
+    // Title auto-summarizer (subtask 16656a). Detect "this is the first
+    // user message in the chat" and kick off a fire-and-forget rename
+    // via Workers AI. Defensive guards:
+    //
+    //   - `_titleSummaryScheduled` per-DO flag stops re-fires on
+    //     resume/reconnect within the same DO instance.
+    //   - We count user-role messages in the persisted history. Think
+    //     persists the just-arrived user message before `beforeTurn`
+    //     runs, so on the first turn we expect exactly 1.
+    //   - If the DO hibernates and a *new* user message arrives later,
+    //     `userMsgs.length` will be >1 and we naturally skip — no need
+    //     to reset the flag.
+    //   - We also gate on a non-empty `tenantId` because the persist
+    //     step targets the control-plane row anyway.
+    //   - 4-char minimum on the user message so a stray "hi" / "?" /
+    //     blank message doesn't burn a model call on garbage.
+    if (!this._titleSummaryScheduled && tenantId) {
+      const messages = this.getMessages?.() ?? [];
+      const userMsgs = Array.isArray(messages)
+        ? messages.filter((m) => (m as { role?: string }).role === "user")
+        : [];
+      if (userMsgs.length === 1) {
+        const text = extractFirstUserText(userMsgs[0]);
+        if (text && text.trim().length >= 4) {
+          this._titleSummaryScheduled = true;
+          this.ctx.waitUntil(
+            summarizeAndPersistTitle(this.env, {
+              chatId: this.name,
+              tenantId,
+              userId: this._currentTurnUserId ?? null,
+              userMessageText: text,
+              modelId: this._modelId,
+              gatewayId: this.env.AI_GATEWAY_ID ?? null,
+              broadcast: (m) => this.broadcast(m),
+              onApplied: (newTitle) => {
+                if (this._cachedChatContext) {
+                  this._cachedChatContext.chatTitle = newTitle;
+                }
+              },
+            }).catch(() => {
+              // summarizeAndPersistTitle catches all errors internally
+              // and logs them; this is purely a belt-and-braces guard
+              // against an unexpected throw escaping waitUntil.
+            })
+          );
+        }
+      }
+    }
 
     return { system: buildSystemPrompt(this._cachedChatContext) };
   }
@@ -637,6 +687,16 @@ export class ChatAgent extends Think<Env> {
 
   /** Tracks the user driving the current turn for audit attribution. */
   private _currentTurnUserId: string | null = null;
+
+  /**
+   * Per-DO flag for the title auto-summarizer (subtask 16656a). Set
+   * once we kick off the first-user-message summary; never reset.
+   * Cross-DO-instance protection comes from the persisted message
+   * history (a hibernation + revive will see >1 user message and skip).
+   * Cross-chat protection comes from this being a per-DO field — and
+   * one DO == one chat in our routing.
+   */
+  private _titleSummaryScheduled: boolean = false;
 
   /**
    * Audit hook (1dd311) — fires after every tool call (success or

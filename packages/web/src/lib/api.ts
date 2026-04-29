@@ -112,8 +112,11 @@ export type ArtifactSummary = {
 
 export const chatsApi = {
   list: () => api.get<{ chats: Chat[] }>("/api/chats"),
-  create: (input: { title?: string; dbProfileId?: string }) =>
-    api.post<{ chat: Chat }>("/api/chats", input),
+  // No `title` — chats start as "New chat" and are auto-titled on the
+  // first user message (subtask 16656a). The api-gateway silently
+  // strips a stale `title` field from older clients, so this rollout
+  // is forward-compatible.
+  create: (input: { dbProfileId?: string }) => api.post<{ chat: Chat }>("/api/chats", input),
   get: (id: string) =>
     api.get<{ chat: Chat; members: ChatMember[]; myRole: "owner" | "participant" }>(
       `/api/chats/${id}`
