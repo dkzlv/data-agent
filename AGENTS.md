@@ -302,6 +302,7 @@ in the dashboard. Stable event names (so saved queries don't break):
 | `chat.title_summarize_skipped` | chat-agent | trigger fired but didn't schedule (no_text / text_too_short / tenant_unresolved) |
 | `chat.history_repaired` | chat-agent | beforeTurn rewrote dangling tool parts from an aborted prior turn |
 | `chat.history_repair_failed` | chat-agent | the repair pass itself threw (best-effort, turn proceeds anyway) |
+| `chat.reasoning_stamp_failed` | chat-agent | failed to stamp measured reasoning elapsedMs onto the assistant message (UI label only; non-blocking) |
 | `ws.upgrade` / `ws.upgrade_response` / `ws.upgrade_failed` | api-gateway | WS reverse-proxy boundary |
 
 Every chat-agent event carries a `turnId` (for in-turn events) or
@@ -440,6 +441,69 @@ pnpm --filter @data-agent/chat-agent exec tsx scripts/debug-clear.ts <chatId>
 
 Calls the `debugClearMessages` RPC on the DO and wipes its message
 history. New turns work fine.
+
+### Inspect what the LLM actually saw / emitted (AI Gateway)
+
+When a turn behaves weirdly (model emits text instead of calling a
+tool, hallucinates a column, ignores instructions), the audit
+timeline + Workers Logs only tell us *what we did with* the
+response — not what we sent to Workers AI or what the model
+actually streamed back. The CF AI Gateway log API is the source of
+truth for both.
+
+**Token.** You need a Cloudflare API token with `Account → AI
+Gateway → Read` scoped to the production CF account. Create at
+https://dash.cloudflare.com/profile/api-tokens. Don't commit it; we
+fetch from `.dev.vars` (`CLOUDFLARE_API_TOKEN`) or paste it ad-hoc
+into a one-off script.
+
+**Endpoints** (gateway id: `data-agent`):
+
+```
+# List logs filtered by metadata (we attach chatId/tenantId/userId/model)
+GET https://api.cloudflare.com/client/v4/accounts/{ACCOUNT}/ai-gateway/gateways/data-agent/logs
+  ?per_page=50
+  &order_by=created_at&order_by_direction=desc
+  &filters=[{"key":"metadata.value","operator":"eq","value":["<chatId>"]}]
+
+# Original request payload (system prompt + messages + tools schema as sent)
+GET .../logs/{logId}/request
+
+# Streamed response (113 SSE chunks for a typical Kimi turn — accumulate
+# delta.content / delta.reasoning_content / delta.tool_calls to reconstruct)
+GET .../logs/{logId}/response
+```
+
+The list endpoint returns id, created_at, model, status_code,
+tokens_in/out, duration. For the Kimi chat turn vs the llama title
+summarizer just filter by `model`.
+
+**Reconstruct streamed output.** The `/response` JSON has a
+top-level `streamed_data: ChunkObject[]`. Each chunk has
+`choices[0].delta.{content, reasoning_content, tool_calls}`.
+Concatenate `content` deltas to get the assistant text, same for
+`reasoning_content`. If `tool_calls` is empty across all chunks the
+model emitted text instead of a tool call — that's the smoking gun
+for prompt issues. (Confirmed once: chat `feca41d8` had 346 chars
+of reasoning, 147 chars of content matching the system-prompt
+example verbatim, zero tool_calls — led to the `system-prompt.ts`
+rewrite that no longer shows code as a fenced output template.)
+
+**One-off pattern** (Python, pasted into `ctx_execute` or a
+throwaway script):
+
+```python
+import json, urllib.request, urllib.parse
+TOKEN, ACCOUNT, GATEWAY = "<token>", "2f7029a7ef2671db090d9304f595c42d", "data-agent"
+filters = json.dumps([{"key":"metadata.value","operator":"eq","value":["<chatId>"]}])
+qs = urllib.parse.urlencode({"per_page":50,"order_by":"created_at","order_by_direction":"desc","filters":filters})
+url = f"https://api.cloudflare.com/client/v4/accounts/{ACCOUNT}/ai-gateway/gateways/{GATEWAY}/logs?{qs}"
+data = json.loads(urllib.request.urlopen(urllib.request.Request(url, headers={"Authorization": f"Bearer {TOKEN}"})).read())
+for r in data["result"]:
+    print(r["id"], r["created_at"], r["model"], r["tokens_in"], "→", r["tokens_out"], r["duration"], "ms")
+```
+
+Then GET the `/request` and `/response` paths for any specific id.
 
 ## Operational scripts
 

@@ -47,8 +47,21 @@ describe("system prompt", () => {
     // as the human-readable label for the step. Without this rule the
     // collapsed tool-call rows would just show raw JS — see
     // `extractCodemodeDescription` in `ChatRoom.tsx`.
-    expect(_SECTIONS.HOW_TO_WORK).toMatch(/start every `codemode` call with a one-line comment/i);
+    expect(_SECTIONS.HOW_TO_WORK).toMatch(/start with a one-line `\/\/` comment/i);
     expect(_SECTIONS.HOW_TO_WORK).toContain("// Fetch top 10 customers");
+  });
+
+  it("explicitly tells the model to call the tool, not write code as text", () => {
+    // Regression guard for chat feca41d8: with a fenced code-block
+    // example presented as the "format" the model emitted the snippet
+    // verbatim as assistant content with no tool_calls, costing the
+    // user a wasted turn. The prompt must be unambiguous: code goes
+    // inside the codemode tool, never in the assistant message.
+    expect(_SECTIONS.HOW_TO_WORK).toMatch(/invoke the `codemode` tool/i);
+    expect(_SECTIONS.HOW_TO_WORK).toMatch(/NEVER reply with a JavaScript snippet as plain text/);
+    expect(_SECTIONS.HOW_TO_WORK).toMatch(
+      /the code goes inside the tool call, not in your assistant message/i
+    );
   });
 
   it("teaches output style", () => {

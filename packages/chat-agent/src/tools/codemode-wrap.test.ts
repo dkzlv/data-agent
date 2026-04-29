@@ -255,4 +255,29 @@ describe("wrapCodemodeTool — observability", () => {
     expect(out.error).toBe("kaboom");
     expect(onEvent).toHaveBeenCalledOnce();
   });
+
+  it("prepends descriptionPrepend ahead of the upstream description", () => {
+    const tool = makeTool(async () => ({ result: 1 }));
+    // Confirm baseline is preserved
+    const wrapped = wrapCodemodeTool(tool, {
+      descriptionPrepend: "USE THIS TOOL — never reply with code as text.",
+    });
+    expect((wrapped as { description: string }).description).toMatch(
+      /^USE THIS TOOL — never reply with code as text\.\n\nfake codemode tool$/
+    );
+  });
+
+  it("uses descriptionPrepend alone when upstream description is empty", () => {
+    const tool = { ...makeTool(async () => 1), description: "" };
+    const wrapped = wrapCodemodeTool(tool as never, {
+      descriptionPrepend: "USE THIS TOOL.",
+    });
+    expect((wrapped as { description: string }).description).toBe("USE THIS TOOL.");
+  });
+
+  it("leaves description untouched when descriptionPrepend is omitted", () => {
+    const tool = makeTool(async () => 1);
+    const wrapped = wrapCodemodeTool(tool);
+    expect((wrapped as { description: string }).description).toBe("fake codemode tool");
+  });
 });

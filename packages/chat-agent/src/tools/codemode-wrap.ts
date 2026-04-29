@@ -38,6 +38,26 @@ export interface CodemodeWrapOptions {
   maxResultChars?: number;
   /** Hook called on truncation / error so callers can log. */
   onEvent?: (event: CodemodeWrapEvent) => void;
+  /**
+   * Text prepended (with a separating blank line) to the upstream
+   * `description` the AI SDK ships to the model as the tool's docs.
+   *
+   * Why prepend instead of replace: `createCodeTool` synthesizes the
+   * description from the registered sub-tools (db.*, chart.*, etc.)
+   * including their TypeScript declarations — the model needs that
+   * to know what's callable. We just want to add a high-priority
+   * directive at the *top* so it's the first thing the model sees
+   * when it reads tool docs while planning a turn.
+   *
+   * Concrete win for chat `feca41d8`: the system prompt's
+   * fenced-code example primed Kimi to emit the snippet as plain
+   * assistant content (no `tool_calls` block) ~5-15% of the time.
+   * Prepending a "USE THIS TOOL — never reply with code in plain
+   * text" directive to the tool description gives the tool channel
+   * an unambiguous voice that pushes back when prompt prose is
+   * ambiguous.
+   */
+  descriptionPrepend?: string;
 }
 
 export type CodemodeWrapEvent =
@@ -214,5 +234,14 @@ export function wrapCodemodeTool<T extends Tool>(tool: T, options: CodemodeWrapO
   // Build a shallow clone so we don't mutate the original tool object.
   // Spread covers Tool's known fields; the cast back to T preserves
   // the AI SDK's branded type.
-  return { ...(tool as object), execute: wrapped } as T;
+  const out: Record<string, unknown> = { ...(tool as object), execute: wrapped };
+  if (options.descriptionPrepend) {
+    // biome-ignore lint/suspicious/noExplicitAny: AI SDK Tool types description as string | undefined
+    const upstream = (tool as any).description;
+    out.description =
+      typeof upstream === "string" && upstream.length > 0
+        ? `${options.descriptionPrepend}\n\n${upstream}`
+        : options.descriptionPrepend;
+  }
+  return out as T;
 }

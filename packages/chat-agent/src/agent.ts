@@ -335,6 +335,9 @@ export class ChatAgent extends Think<Env> {
     this._chunkCount = 0;
     this._stepCount = 0;
     this._toolCalls = [];
+    // Reasoning timer reset — see `_reasoningStartedAt` field comment.
+    this._reasoningStartedAt = null;
+    this._reasoningElapsedMs = 0;
 
     // Audit (1dd311) — record turn.start. Best-effort, never blocks.
     if (tenantId) {
@@ -452,6 +455,90 @@ export class ChatAgent extends Think<Env> {
    * authoritative DB rather than DO storage so the limit is
    * consistent across replicas / restarts.
    */
+  /**
+   * Stamp the measured reasoning duration onto the most recent
+   * assistant message's reasoning part(s) so the web UI can render
+   * "Thought for Ns" honestly on replay. We write into
+   * `providerMetadata.dataAgent.elapsedMs` because:
+   *
+   *   - `providerMetadata` is a first-class field on `ReasoningUIPart`
+   *     (typed as `ProviderMetadata`); the AI SDK preserves arbitrary
+   *     keys nested under it through serialization.
+   *   - Namespacing under `dataAgent` keeps us out of any vendor's
+   *     way (e.g. anthropic, openai both stash provider-specific
+   *     fields here).
+   *
+   * If multiple reasoning parts exist on the message we stamp the
+   * total on the *last* one only — that's the one currently
+   * streaming (or just finished) for this turn. Earlier reasoning
+   * parts belong to prior steps and already have their own stamps
+   * from previous `onChatResponse` calls.
+   *
+   * Persists via `session.updateMessage` — the same low-level
+   * primitive used by `repair-history.ts`, side-stepping
+   * `saveMessages` (which would trigger another turn).
+   */
+  private stampReasoningElapsedOnLastAssistant(elapsedMs: number): void {
+    const messages = this.getMessages?.() ?? [];
+    if (!Array.isArray(messages) || messages.length === 0) return;
+
+    // Find the last assistant message — that's the one this turn
+    // just produced.
+    let lastAssistantIdx = -1;
+    for (let i = messages.length - 1; i >= 0; i--) {
+      const m = messages[i] as { role?: string };
+      if (m?.role === "assistant") {
+        lastAssistantIdx = i;
+        break;
+      }
+    }
+    if (lastAssistantIdx < 0) return;
+
+    const msg = messages[lastAssistantIdx] as {
+      id?: string;
+      role?: string;
+      parts?: Array<{ type?: string; providerMetadata?: Record<string, unknown> }>;
+    };
+    if (typeof msg.id !== "string" || !Array.isArray(msg.parts)) return;
+
+    // Walk parts back-to-front for the *last* reasoning part — that's
+    // the one this turn was streaming. Stamping earlier parts would
+    // overwrite values from previous steps.
+    let lastReasoningIdx = -1;
+    for (let i = msg.parts.length - 1; i >= 0; i--) {
+      if (msg.parts[i]?.type === "reasoning") {
+        lastReasoningIdx = i;
+        break;
+      }
+    }
+    if (lastReasoningIdx < 0) return;
+
+    const target = msg.parts[lastReasoningIdx];
+    if (!target) return;
+
+    const prevMeta = target.providerMetadata ?? {};
+    const prevDataAgent = (prevMeta.dataAgent as Record<string, unknown> | undefined) ?? {};
+    const nextParts = msg.parts.slice();
+    nextParts[lastReasoningIdx] = {
+      ...target,
+      providerMetadata: {
+        ...prevMeta,
+        dataAgent: {
+          ...prevDataAgent,
+          elapsedMs: elapsedMs,
+        },
+      },
+    };
+    const nextMsg = { ...msg, parts: nextParts };
+
+    // Cast through unknown — Session.updateMessage takes a
+    // SessionMessage which is structurally compatible with UIMessage,
+    // but TS can't see that without dragging the AI SDK types up.
+    this.session.updateMessage(
+      nextMsg as unknown as Parameters<typeof this.session.updateMessage>[0]
+    );
+  }
+
   private async checkRateLimits(tenantId: string) {
     const { createDbClient } = await import("@data-agent/db");
     const url = await readSecret(this.env.CONTROL_PLANE_DB_URL);
@@ -577,9 +664,33 @@ export class ChatAgent extends Think<Env> {
    */
   override async onChunk(ctx: { chunk?: { type?: string } }): Promise<void> {
     const type = ctx?.chunk?.type ?? "unknown";
-    this._lastChunkAt = Date.now();
+    const now = Date.now();
+    this._lastChunkAt = now;
     this._lastChunkType = type;
     this._chunkCount += 1;
+
+    // Reasoning window timer. The AI SDK emits `reasoning-start` →
+    // 1..N `reasoning-delta` → `reasoning-end` for each reasoning
+    // block. We measure wall-clock between start and end and
+    // accumulate (turns can have multiple blocks if reasoning
+    // interleaves with tool calls). The accumulated value is
+    // stamped onto the persisted reasoning part(s) in
+    // `onChatResponse` so the web UI shows the *measured* time
+    // instead of fabricating one from text length.
+    if (type === "reasoning-start") {
+      // Defensive: if a previous block didn't close (mid-stream
+      // abort), close it implicitly here so we don't double-count.
+      if (this._reasoningStartedAt != null) {
+        this._reasoningElapsedMs += Math.max(0, now - this._reasoningStartedAt);
+      }
+      this._reasoningStartedAt = now;
+    } else if (type === "reasoning-end") {
+      if (this._reasoningStartedAt != null) {
+        this._reasoningElapsedMs += Math.max(0, now - this._reasoningStartedAt);
+        this._reasoningStartedAt = null;
+      }
+    }
+
     // Log every 50th chunk + always log non-text-delta chunks (tool
     // input/result/finish). text-delta is the bulk so suppression
     // there saves the most.
@@ -591,7 +702,7 @@ export class ChatAgent extends Think<Env> {
         turnId: this._turnId,
         chunkType: type,
         chunkIndex: this._chunkCount,
-        msSinceTurnStart: this._turnStartedAt > 0 ? Date.now() - this._turnStartedAt : null,
+        msSinceTurnStart: this._turnStartedAt > 0 ? now - this._turnStartedAt : null,
       });
     }
   }
@@ -611,6 +722,34 @@ export class ChatAgent extends Think<Env> {
     const tenantId = this._cachedChatContext?.tenantId;
     const tokens = { ...this._currentTurnTokens };
     const durationMs = this._turnStartedAt > 0 ? Date.now() - this._turnStartedAt : null;
+
+    // Close any reasoning window that didn't get a `reasoning-end`
+    // (defensive — happens on aborted streams). Then stamp the
+    // total elapsed onto the most recent assistant message's
+    // reasoning parts so the web UI can display an accurate
+    // "Thought for Ns" on replay. Stored in `providerMetadata`
+    // under our `dataAgent` key — the AI SDK preserves arbitrary
+    // metadata through serialization without mutation.
+    if (this._reasoningStartedAt != null) {
+      this._reasoningElapsedMs += Math.max(0, Date.now() - this._reasoningStartedAt);
+      this._reasoningStartedAt = null;
+    }
+    if (this._reasoningElapsedMs > 0) {
+      try {
+        this.stampReasoningElapsedOnLastAssistant(this._reasoningElapsedMs);
+      } catch (err) {
+        // Stamping is best-effort: a failure here only loses a
+        // UI label, never blocks the user's response or the audit.
+        logEvent({
+          event: "chat.reasoning_stamp_failed",
+          level: "warn",
+          chatId: this.name,
+          turnId: this._turnId,
+          error: truncateMessage(err),
+        });
+      }
+    }
+
     // Reset BEFORE the await — next turn could start before the audit
     // insert completes, and we don't want carryover.
     this._currentTurnTokens = this._zeroTokens();
@@ -700,6 +839,30 @@ export class ChatAgent extends Think<Env> {
   private _chunkCount: number = 0;
   private _stepCount: number = 0;
   private _toolCalls: string[] = [];
+
+  /**
+   * Reasoning-time bookkeeping for the current turn. We stamp the
+   * total wall-clock spent emitting reasoning chunks onto the
+   * persisted assistant message in `onChatResponse`, so the web
+   * UI can show an honest "Thought for Ns" label even on replay.
+   *
+   * Why we measure server-side instead of client-side: the web
+   * UI's earlier fallback (text-length / 30 chars/s) was a
+   * fabrication — chat `feca41d8` showed "Thought for 12s" for a
+   * turn whose reasoning actually streamed in ~1s but had ~350
+   * chars of text. The real number must come from the source.
+   *
+   *   - `_reasoningStartedAt` is the timestamp of the most recent
+   *     `reasoning-start` chunk that has not yet been closed by a
+   *     `reasoning-end`. Null means "not currently reasoning".
+   *   - `_reasoningElapsedMs` accumulates closed reasoning windows;
+   *     a single Kimi turn often emits one block, but multi-step
+   *     turns can interleave reasoning between tool calls.
+   *
+   * Both reset in `beforeTurn`.
+   */
+  private _reasoningStartedAt: number | null = null;
+  private _reasoningElapsedMs: number = 0;
 
   /**
    * Turn-error hook (1dd311 + streaming-debug).
@@ -961,6 +1124,25 @@ export class ChatAgent extends Think<Env> {
     //     next turn's input budget or balloon the persisted message
     //     row.
     const codemode = wrapCodemodeTool(rawCodemode, {
+      // Belt-and-braces against the "model writes code as text"
+      // failure mode (chat feca41d8 in production). The system
+      // prompt now disambiguates tool-call vs assistant-text, but
+      // models read tool docs as a separate channel — putting the
+      // same directive HERE means even when the prompt prose is
+      // skimmed, the tool description's first paragraph reinforces
+      // that emitting an `async () => { ... }` snippet as plain
+      // assistant content is the wrong move. The upstream
+      // `createCodeTool` description (the typed namespace
+      // declarations) is preserved as the rest of the description.
+      descriptionPrepend:
+        "USE THIS TOOL whenever you need to introspect the schema, " +
+        "run SQL, save a chart, write an artifact, or do any other " +
+        "real work for the user. Pass the JavaScript arrow function " +
+        "as the `code` argument. NEVER reply to the user with code in " +
+        "plain text — that is a wasted turn. If you are about to write " +
+        "`async () => { ... }` in your assistant message, stop and call " +
+        "this tool instead. Only write prose to the user *after* the " +
+        "tool has run, summarizing what you found.",
       onEvent: (ev) => {
         if (ev.kind === "truncated") {
           logEvent({
@@ -1344,9 +1526,8 @@ export class ChatAgent extends Think<Env> {
         temperature: 0.3,
         maxOutputTokens: 64,
       });
-      const usage = (
-        result as { usage?: { outputTokens?: number; reasoningTokens?: number } }
-      ).usage;
+      const usage = (result as { usage?: { outputTokens?: number; reasoningTokens?: number } })
+        .usage;
       const reasoningTextLen = (result as { reasoningText?: string }).reasoningText?.length;
       return {
         ok: true,

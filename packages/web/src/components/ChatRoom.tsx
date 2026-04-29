@@ -619,6 +619,18 @@ interface UIPart {
   input?: unknown;
   output?: unknown;
   errorText?: string;
+  /**
+   * AI SDK ships an optional metadata bag on every UI part. We stash
+   * the measured reasoning duration there from the chat-agent under
+   * `dataAgent.elapsedMs` so the UI can render an honest
+   * "Thought for Ns" label even on replay (where the client never
+   * observed the reasoning stream and would otherwise have to
+   * fabricate a number from text length).
+   */
+  providerMetadata?: {
+    dataAgent?: { elapsedMs?: number };
+    [k: string]: unknown;
+  };
 }
 
 function MessageBubble({ message }: { message: UIMessage }) {
@@ -685,13 +697,21 @@ function ReasoningPart({ part }: { part: UIPart }) {
   const text = part.text ?? "";
   const streaming = part.state === "streaming";
 
-  // Track elapsed thinking time. We start the clock the first time
-  // we see this part and freeze it the moment streaming flips false
-  // (i.e. the model emitted its final reasoning chunk). Persisting
-  // the frozen value across rerenders means the label stays stable
-  // ("Thought for 12s") even after the message is fully delivered
-  // — refreshing the chat won't reset it because the frozen value
-  // is recomputed from the (effectively constant) text length.
+  // The chat-agent stamps the *measured* reasoning duration on the
+  // part's providerMetadata when the turn finishes (see
+  // `stampReasoningElapsedOnLastAssistant` in agent.ts). Prefer that
+  // over any client-side measurement: it's the only honest number on
+  // a replayed message because the WS client never observed the
+  // stream chunks the first time. The earlier code fabricated a
+  // duration via `text.length / 30 chars/s` and got it badly wrong
+  // (chat feca41d8 showed "Thought for 12s" for a turn whose
+  // reasoning actually streamed in ~1s).
+  const persistedElapsedMs = part.providerMetadata?.dataAgent?.elapsedMs;
+
+  // For freshly-streamed turns (no persisted value yet) we still
+  // measure locally so the user sees a live counter while the model
+  // is thinking. The local measurement is then superseded by the
+  // server-stamped value the moment Think persists the message.
   const startedAt = useRef<number | null>(null);
   const [tick, setTick] = useState(0);
   const [frozenSeconds, setFrozenSeconds] = useState<number | null>(null);
@@ -705,30 +725,34 @@ function ReasoningPart({ part }: { part: UIPart }) {
 
   useEffect(() => {
     // The first non-streaming render after streaming → freeze the
-    // elapsed value. After this `frozenSeconds` carries the label.
+    // elapsed value. After this `frozenSeconds` carries the label
+    // until the persisted value lands (which then takes precedence).
     if (!streaming && startedAt.current != null && frozenSeconds == null) {
       const elapsed = Math.max(1, Math.round((Date.now() - startedAt.current) / 1000));
       setFrozenSeconds(elapsed);
     }
   }, [streaming, frozenSeconds]);
 
-  const seconds = (() => {
+  const seconds: number | null = (() => {
+    // Server-stamped value wins. Round to whole seconds, floor at 1
+    // so a sub-second reasoning burst doesn't show "Thought for 0s".
+    if (typeof persistedElapsedMs === "number" && persistedElapsedMs >= 0) {
+      return Math.max(1, Math.round(persistedElapsedMs / 1000));
+    }
     if (frozenSeconds != null) return frozenSeconds;
     if (streaming && startedAt.current != null) {
       // tick is referenced so the closure recomputes on every interval.
       void tick;
       return Math.max(1, Math.round((Date.now() - startedAt.current) / 1000));
     }
-    // Edge case: we mounted with the part already finished (e.g. a
-    // recovered message replay). Estimate from text length so the
-    // label isn't suspiciously "0s". Roughly 30 chars/sec is a
-    // reasonable lower bound for reasoning streams.
-    const trimmed = text.trim();
-    if (!trimmed) return 1;
-    return Math.max(1, Math.round(trimmed.length / 30));
+    // Edge case: replayed message with no server stamp (older row,
+    // pre-2026-04-29 deploy). Don't fabricate from text length —
+    // that misled users with bogus 12s readings. Show no number.
+    void text;
+    return null;
   })();
 
-  const label = streaming ? `Thinking…` : `Thought for ${seconds}s`;
+  const label = streaming ? `Thinking…` : seconds != null ? `Thought for ${seconds}s` : `Thought`;
 
   // Controlled open state so AnimatePresence can drive an expand
   // animation. The native <details> element animates synchronously
