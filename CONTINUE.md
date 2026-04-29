@@ -201,7 +201,7 @@ export function createAuth(env: Env) {
 
 - [x] 776325 Initialize monorepo
 - [x] 9c2659 Set up CI (workflow exists; user has deprioritized — not monitoring runs)
-- [ ] a636fe Provision Cloudflare account
+- [x] a636fe Provision Cloudflare account
 - [ ] 93f695 Pick + provision control-plane DB
 - [ ] 3c8c0b Scaffold api-gateway Worker
 - [ ] 616db2 Scaffold ChatAgent DO

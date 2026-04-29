@@ -11,12 +11,21 @@
   },
   "scripts": {
     "build": "tsc --build",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "db:generate": "drizzle-kit generate",
+    "db:migrate": "tsx scripts/migrate.ts",
+    "db:push": "drizzle-kit push",
+    "db:studio": "drizzle-kit studio"
   },
   "dependencies": {
-    "@data-agent/shared": "workspace:*"
+    "@data-agent/shared": "workspace:*",
+    "drizzle-orm": "^0.45.2",
+    "postgres": "^3.4.9"
   },
   "devDependencies": {
+    "@types/node": "^25.6.0",
+    "drizzle-kit": "^0.31.10",
+    "tsx": "^4.21.0",
     "typescript": "^5.9.0"
   }
 }
