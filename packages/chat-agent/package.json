@@ -12,6 +12,7 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
+    "@ai-sdk/anthropic": "^3.0.72",
     "@ai-sdk/openai": "^3.0.54",
     "@cloudflare/ai-chat": "^0.5.4",
     "@cloudflare/codemode": "^0.3.4",

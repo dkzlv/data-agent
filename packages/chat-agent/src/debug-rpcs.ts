@@ -332,16 +332,27 @@ export async function artifactToolsSmoke(host: DebugRpcHost): Promise<{
     { execute: (...args: unknown[]) => Promise<unknown> }
   >;
 
-  const chart = (await chartFns.bar!.execute({
-    data: [
-      { country: "USA", revenue: 1200 },
-      { country: "UK", revenue: 700 },
-      { country: "DE", revenue: 540 },
-    ],
-    x: "country",
-    y: "revenue",
-    title: "Revenue by country",
-  })) as { id: string; url: string; chartType?: string };
+  // Post task 722e12: `chart.save(spec, name?)` is the only chart
+  // helper. Pass a complete Vega-Lite v5 spec — the provider merges
+  // sensible defaults ($schema, width:"container", height:320).
+  const chart = (await chartFns.save!.execute(
+    {
+      title: "Revenue by country",
+      data: {
+        values: [
+          { country: "USA", revenue: 1200 },
+          { country: "UK", revenue: 700 },
+          { country: "DE", revenue: 540 },
+        ],
+      },
+      mark: "bar",
+      encoding: {
+        x: { field: "country", type: "nominal" },
+        y: { field: "revenue", type: "quantitative" },
+      },
+    },
+    "Revenue by country"
+  )) as { id: string; url: string; chartType?: string };
 
   const file = (await artifactFns.save!.execute(
     "summary.md",

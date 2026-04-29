@@ -14,21 +14,27 @@
  *   const a = await artifact.save("report.md", markdownText, "text/markdown");
  *   const csv = await artifact.save("rows.csv", csvText, "text/csv");
  *
- *   const chart = await chart.bar({
- *     data: rows,                        // Array<{ category: ..., value: ... }>
- *     x: "category",
- *     y: "value",
- *     title: "Top 10 customers by revenue",
- *   });
+ *   const c = await chart.save({
+ *     $schema: "https://vega.github.io/schema/vega-lite/v5.json",
+ *     data: { values: rows },
+ *     mark: "bar",
+ *     encoding: {
+ *       x: { field: "category", type: "nominal" },
+ *       y: { field: "revenue", type: "quantitative" },
+ *     },
+ *   }, "Top customers");
  *
  * Both return `{ id, url, name, mime, kind }`. The URL points at
  *   /api/chats/<chatId>/artifacts/<id>
  * which is served from the ChatAgent's fetch() handler with strong
  * caching headers (artifacts are immutable once created).
  *
- * Chart specs use the Vega-Lite v5 schema. Subtask abe549 ships the
- * vega-lite types for the sandbox so the LLM can also assemble custom
- * specs via `chart.spec({ ... })`.
+ * `chart.save` accepts a Vega-Lite v5 spec object. We give the model
+ * the fewest possible inputs because Claude reliably writes correct
+ * specs from the schema documentation alone — earlier we shipped 5
+ * chart-type wrappers + a separate `vegaLite.*` validator namespace,
+ * which together added ~3k chars of tool docs we never recouped in
+ * better outputs.
  */
 import type { ToolProvider } from "@cloudflare/codemode";
 import type { Workspace } from "@cloudflare/shell";
@@ -52,7 +58,9 @@ export interface ArtifactRef {
   createdAt: string;
   /** Approximate size in bytes. */
   size: number;
-  /** For charts: the canonical chart "type" (e.g. "bar", "line"). */
+  /** For charts: the canonical chart "type" — `"custom"` since
+   *  `chart.save` accepts arbitrary specs. Kept on the ref so existing
+   *  audit + UI consumers (which key off `chartType`) stay unchanged. */
   chartType?: string;
 }
 
@@ -160,7 +168,9 @@ export function artifactTools(agent: AgentLike): ToolProvider {
   const types = `
 declare const artifact: {
   /** Persist a named artifact in the chat's workspace. Returns a stable
-   *  reference with a URL the chat UI uses to render it. */
+   *  reference with a URL the chat UI uses to render it. Use this for
+   *  long-form findings (markdown), data exports (csv/tsv/json), or any
+   *  text payload the user should be able to download. */
   save(
     name: string,
     content: string,
@@ -270,272 +280,109 @@ declare const artifact: {
 
 // ─── chart.* ────────────────────────────────────────────────────────────────
 
-interface BaseChartArgs {
-  data: ReadonlyArray<Record<string, unknown>>;
-  x: string;
-  y: string;
-  /** Optional series field for grouped bars / multi-line charts. */
-  color?: string;
-  /** Aggregation operator for `y` (default `sum` when there are duplicate `x`s, otherwise none). */
-  aggregate?: "sum" | "mean" | "median" | "min" | "max" | "count";
-  title?: string;
-  /** Display name for the artifact (default derived from title). */
-  name?: string;
-}
+const VEGA_LITE_SCHEMA_URL = "https://vega.github.io/schema/vega-lite/v5.json";
 
-interface SpecArgs {
-  spec: Record<string, unknown>;
-  title?: string;
-  name?: string;
-}
+/** Sensible Vega-Lite defaults merged into every spec. `width: "container"`
+ *  matches the chat artifact viewer's `fullWidth` mode (see
+ *  `web/src/components/ArtifactViewer.tsx`). */
+const VEGA_LITE_DEFAULTS = {
+  $schema: VEGA_LITE_SCHEMA_URL,
+  width: "container",
+  height: 320,
+  autosize: { type: "fit", contains: "padding" } as const,
+};
 
-function vegaLiteBase(title: string | undefined): Record<string, unknown> {
-  return {
-    $schema: "https://vega.github.io/schema/vega-lite/v5.json",
-    ...(title ? { title } : {}),
-    width: "container",
-    height: 320,
-    autosize: { type: "fit", contains: "padding" },
-  };
-}
-
-function inferType(data: ReadonlyArray<Record<string, unknown>>, field: string): string {
-  for (const row of data) {
-    const v = row[field];
-    if (v == null) continue;
-    if (typeof v === "number") return "quantitative";
-    if (v instanceof Date) return "temporal";
-    if (typeof v === "string") {
-      // Loose ISO-8601 sniff — anything else is nominal
-      if (/^\d{4}-\d{2}-\d{2}/.test(v)) return "temporal";
-      return "nominal";
-    }
+/**
+ * Lightweight structural sanity check on a Vega-Lite spec. We don't
+ * ship the full vega-lite schema validator (~1.5 MB) — the rendered
+ * chart will surface real errors. This catches the common mistakes
+ * (non-object spec, missing mark, missing data) early so the model
+ * gets an actionable error instead of an empty chart.
+ *
+ * Inlined from the old `vegaLite.validate` tool that was removed
+ * along with its namespace — only the chart save path needed it.
+ */
+function sanityCheckSpec(spec: unknown): { ok: true } | { ok: false; reason: string } {
+  if (!spec || typeof spec !== "object" || Array.isArray(spec)) {
+    return { ok: false, reason: "spec must be a non-array object" };
   }
-  return "nominal";
-}
-
-function chartArtifactRef(
-  agent: AgentLike,
-  args: { title?: string; name?: string; chartType: string },
-  spec: Record<string, unknown>
-): Promise<ArtifactRef> {
-  const id = crypto.randomUUID();
-  const baseName = sanitizeName(args.name ?? args.title ?? `${args.chartType}-chart`);
-  const name = baseName.endsWith(".vl.json") ? baseName : `${baseName}.vl.json`;
-  const json = JSON.stringify(spec, null, 2);
-  return persistArtifact(
-    agent,
-    {
-      id,
-      name,
-      mime: "application/vnd.vegalite.v5+json",
-      kind: "chart",
-      size: json.length,
-      createdAt: new Date().toISOString(),
-      chartType: args.chartType,
-    },
-    json
-  );
-}
-
-function buildSimpleSpec(
-  args: BaseChartArgs,
-  mark: "bar" | "line" | "point" | "area"
-): Record<string, unknown> {
-  const xType = inferType(args.data, args.x);
-  const yType = "quantitative"; // y is always numeric for these charts
-  const encoding: Record<string, unknown> = {
-    x: { field: args.x, type: xType, title: args.x },
-    y: {
-      field: args.y,
-      type: yType,
-      title: args.y,
-      ...(args.aggregate ? { aggregate: args.aggregate } : {}),
-    },
-  };
-  if (args.color) {
-    encoding.color = { field: args.color, type: inferType(args.data, args.color) };
+  const s = spec as Record<string, unknown>;
+  const composers = ["layer", "concat", "hconcat", "vconcat", "facet", "repeat", "spec"];
+  const hasComposer = composers.some((k) => k in s);
+  if (!hasComposer && s.mark === undefined) {
+    return {
+      ok: false,
+      reason:
+        "spec must define `mark` (e.g. 'bar', 'line', 'point') or a composition (`layer`, `concat`, etc.)",
+    };
   }
-  return {
-    ...vegaLiteBase(args.title),
-    data: { values: args.data },
-    mark: mark === "point" ? { type: "point", filled: true } : mark,
-    encoding,
-  };
-}
-
-function validateBaseArgs(raw: unknown): BaseChartArgs {
-  const a = raw as Partial<BaseChartArgs>;
-  if (!Array.isArray(a?.data)) throw new Error("chart: `data` must be an array of rows");
-  if (typeof a.x !== "string") throw new Error("chart: `x` (field name) is required");
-  if (typeof a.y !== "string") throw new Error("chart: `y` (field name) is required");
-  return {
-    data: a.data,
-    x: a.x,
-    y: a.y,
-    color: typeof a.color === "string" ? a.color : undefined,
-    aggregate: a.aggregate,
-    title: typeof a.title === "string" ? a.title : undefined,
-    name: typeof a.name === "string" ? a.name : undefined,
-  };
+  if (!hasComposer && !s.data && s.datasets === undefined) {
+    return {
+      ok: false,
+      reason: "missing `data` — supply `{ values: [...] }` or `{ url: '…' }`",
+    };
+  }
+  return { ok: true };
 }
 
 export function chartTools(agent: AgentLike): ToolProvider {
   const types = `
 declare const chart: {
-  /** Bar chart. \`x\` is the categorical field, \`y\` is the value. */
-  bar(args: {
-    data: ReadonlyArray<Record<string, unknown>>;
-    x: string;
-    y: string;
-    color?: string;
-    aggregate?: "sum" | "mean" | "median" | "min" | "max" | "count";
-    title?: string;
-    name?: string;
-  }): Promise<{
+  /** Persist a Vega-Lite v5 spec as a chart artifact. The spec is
+   *  merged with sensible defaults (\`$schema\`, \`width: "container"\`,
+   *  \`height: 320\`) and validated structurally before being written.
+   *  Returns a chart artifact reference.
+   *
+   *  Provide a complete spec including \`data\`, \`mark\`, and \`encoding\`.
+   *  The optional second argument is the user-visible artifact name
+   *  (defaults to the spec's \`title\` or "chart"). */
+  save(
+    spec: Record<string, unknown>,
+    name?: string
+  ): Promise<{
     id: string; name: string; mime: string; kind: "chart";
-    url: string; createdAt: string; size: number; chartType: "bar";
-  }>;
-
-  /** Line chart. Use a temporal or ordinal \`x\`. */
-  line(args: {
-    data: ReadonlyArray<Record<string, unknown>>;
-    x: string;
-    y: string;
-    color?: string;
-    aggregate?: "sum" | "mean" | "median" | "min" | "max" | "count";
-    title?: string;
-    name?: string;
-  }): Promise<{
-    id: string; name: string; mime: string; kind: "chart";
-    url: string; createdAt: string; size: number; chartType: "line";
-  }>;
-
-  /** Scatter plot. Both axes should be quantitative. */
-  scatter(args: {
-    data: ReadonlyArray<Record<string, unknown>>;
-    x: string;
-    y: string;
-    color?: string;
-    title?: string;
-    name?: string;
-  }): Promise<{
-    id: string; name: string; mime: string; kind: "chart";
-    url: string; createdAt: string; size: number; chartType: "scatter";
-  }>;
-
-  /** Histogram. \`y\` is omitted — counts are computed automatically. */
-  histogram(args: {
-    data: ReadonlyArray<Record<string, unknown>>;
-    x: string;
-    title?: string;
-    name?: string;
-    /** Number of bins (default 30). */
-    bins?: number;
-  }): Promise<{
-    id: string; name: string; mime: string; kind: "chart";
-    url: string; createdAt: string; size: number; chartType: "histogram";
-  }>;
-
-  /** Custom Vega-Lite v5 spec. The spec is validated and stored as-is. */
-  spec(args: {
-    spec: Record<string, unknown>;
-    title?: string;
-    name?: string;
-  }): Promise<{
-    id: string; name: string; mime: string; kind: "chart";
-    url: string; createdAt: string; size: number; chartType: "custom";
+    url: string; createdAt: string; size: number; chartType: string;
   }>;
 };
 `;
 
-  const bar = async (raw: unknown) => {
-    const args = validateBaseArgs(raw);
-    return chartArtifactRef(agent, { ...args, chartType: "bar" }, buildSimpleSpec(args, "bar"));
-  };
-  const line = async (raw: unknown) => {
-    const args = validateBaseArgs(raw);
-    return chartArtifactRef(agent, { ...args, chartType: "line" }, buildSimpleSpec(args, "line"));
-  };
-  const scatter = async (raw: unknown) => {
-    const args = validateBaseArgs(raw);
-    return chartArtifactRef(
-      agent,
-      { ...args, chartType: "scatter" },
-      buildSimpleSpec(args, "point")
-    );
-  };
-  const histogram = async (raw: unknown) => {
-    const a = raw as {
-      data?: unknown;
-      x?: unknown;
-      bins?: unknown;
-      title?: unknown;
-      name?: unknown;
-    };
-    if (!Array.isArray(a?.data)) throw new Error("chart.histogram: `data` array required");
-    if (typeof a.x !== "string") throw new Error("chart.histogram: `x` (field name) required");
-    const bins = typeof a.bins === "number" ? a.bins : 30;
-    const spec = {
-      ...vegaLiteBase(typeof a.title === "string" ? a.title : undefined),
-      data: { values: a.data },
-      mark: "bar",
-      encoding: {
-        x: { field: a.x, type: "quantitative", bin: { maxbins: bins }, title: a.x },
-        y: { aggregate: "count", type: "quantitative", title: "count" },
-      },
-    };
-    return chartArtifactRef(
-      agent,
-      {
-        title: typeof a.title === "string" ? a.title : undefined,
-        name: typeof a.name === "string" ? a.name : undefined,
-        chartType: "histogram",
-      },
-      spec
-    );
-  };
-  const spec = async (raw: unknown) => {
-    const a = raw as Partial<SpecArgs>;
-    if (!a?.spec || typeof a.spec !== "object") {
-      throw new Error("chart.spec: `spec` must be a Vega-Lite v5 spec object");
+  const save = async (rawSpec: unknown, rawName: unknown): Promise<ArtifactRef> => {
+    const check = sanityCheckSpec(rawSpec);
+    if (!check.ok) {
+      throw new Error(`chart.save: invalid Vega-Lite spec — ${check.reason}`);
     }
-    const merged = { ...vegaLiteBase(a.title), ...a.spec };
-    return chartArtifactRef(
+    const userSpec = rawSpec as Record<string, unknown>;
+    // Defaults first, user spec wins on conflicts. Title comes only
+    // from the user spec (no synthetic title injection).
+    const merged: Record<string, unknown> = { ...VEGA_LITE_DEFAULTS, ...userSpec };
+    const title = typeof userSpec.title === "string" ? userSpec.title : undefined;
+    const explicitName = typeof rawName === "string" ? rawName : undefined;
+    const baseName = sanitizeName(explicitName ?? title ?? "chart");
+    const name = baseName.endsWith(".vl.json") ? baseName : `${baseName}.vl.json`;
+    const json = JSON.stringify(merged, null, 2);
+    return persistArtifact(
       agent,
       {
-        title: a.title,
-        name: a.name,
+        id: crypto.randomUUID(),
+        name,
+        mime: "application/vnd.vegalite.v5+json",
+        kind: "chart",
+        size: json.length,
+        createdAt: new Date().toISOString(),
         chartType: "custom",
       },
-      merged
+      json
     );
   };
 
   return {
     name: "chart",
     types,
-    positionalArgs: false, // chart.bar({...}) — single object arg
+    positionalArgs: true,
     tools: {
-      bar: {
-        description: "Bar chart from rows. Returns a chart artifact reference.",
-        execute: async (args: unknown) => bar(args),
-      },
-      line: {
-        description: "Line chart from rows. Use a temporal x for time-series.",
-        execute: async (args: unknown) => line(args),
-      },
-      scatter: {
-        description: "Scatter plot. Both axes quantitative.",
-        execute: async (args: unknown) => scatter(args),
-      },
-      histogram: {
-        description: "Histogram of a single quantitative field.",
-        execute: async (args: unknown) => histogram(args),
-      },
-      spec: {
-        description: "Save a custom Vega-Lite v5 spec as a chart artifact.",
-        execute: async (args: unknown) => spec(args),
+      save: {
+        description: "Persist a Vega-Lite v5 spec as a chart artifact.",
+        execute: async (...args: unknown[]) => save(args[0], args[1]),
       },
     },
   };
