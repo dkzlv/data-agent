@@ -2,7 +2,7 @@ pre-commit:
   parallel: true
   commands:
     format:
-      glob: "*.{ts,tsx,js,jsx,json,jsonc,md}"
+      glob: "*.{ts,tsx,js,jsx,json,jsonc}"
       run: pnpm exec biome format --write {staged_files} && git add {staged_files}
     lint:
       glob: "*.{ts,tsx,js,jsx}"

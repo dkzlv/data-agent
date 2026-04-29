@@ -102,6 +102,7 @@ packages/
 3. **Commit per subtask.** Conventional commits: `feat(scope): ...`, `chore(scope): ...`, etc. Body should describe what got done. Reference subtask id like `[d7943e/776325]`.
 4. **Never run `wrangler deploy` for production until at least the spike (`1b9bc9`) is green.** Local dev / `wrangler dev` only.
 5. **Cost ceiling.** Worst-realistic-case is < $5 because we're inside Workers Paid + free tiers + Workers AI included neurons. Don't run load tests. Don't run unbounded scripts.
+6. **CI babysitting: skip.** User explicitly deprioritized CI. Don't poll `gh run list`, don't fix dependabot PRs. Local git hooks (lefthook) catch the same issues pre-push, which is enough.
 6. **If genuinely blocked**, append a `# BLOCKED ON USER:` block at the bottom of this file with the question, mark the current subtask in-progress, and STOP gracefully. Do not invent answers to user-only questions.
 
 ## Useful commands
@@ -199,7 +200,7 @@ export function createAuth(env: Env) {
 (append after each subtask)
 
 - [x] 776325 Initialize monorepo
-- [ ] 9c2659 Set up CI
+- [x] 9c2659 Set up CI (workflow exists; user has deprioritized — not monitoring runs)
 - [ ] a636fe Provision Cloudflare account
 - [ ] 93f695 Pick + provision control-plane DB
 - [ ] 3c8c0b Scaffold api-gateway Worker
