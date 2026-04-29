@@ -17,14 +17,17 @@
     "cpu_ms": 300000
   },
 
+  // Both web and gateway live under `*.data-agent.dkzlv.com` so the
+  // auth cookie is first-party to both. The leading-dot COOKIE_DOMAIN
+  // tells `auth.ts` to emit Lax + Domain=.data-agent.dkzlv.com, which
+  // (a) sidesteps third-party-cookie blocking that bit us when web
+  // moved to dkzlv.com while gateway stayed on workers.dev, and (b)
+  // keeps the cookie scoped to this app rather than the whole
+  // dkzlv.com zone. See decision #10 in AGENTS.md.
   "vars": {
-    // workers.dev URLs until custom domains are provisioned. Cookies on
-    // workers.dev can't be cross-subdomain, so the alpha is single-host:
-    // we'll need either a CNAME setup or to host the api-gateway behind
-    // app.data-agent.dkzlv.com via a sub-path before public launch.
-    "APP_URL": "https://data-agent-web.dkzlv.workers.dev",
-    "API_URL": "https://data-agent-api-gateway.dkzlv.workers.dev",
-    "COOKIE_DOMAIN": "data-agent-api-gateway.dkzlv.workers.dev",
+    "APP_URL": "https://data-agent.dkzlv.com",
+    "API_URL": "https://api.data-agent.dkzlv.com",
+    "COOKIE_DOMAIN": ".data-agent.dkzlv.com",
     "CF_ACCOUNT_ID": "2f7029a7ef2671db090d9304f595c42d",
     // Closed-alpha allow-list for magic-link signups. Comma-separated
     // domain suffixes (no `@`). Set to `*` to disable the gate.
@@ -83,9 +86,7 @@
       "remote": true,
       "allowed_sender_addresses": ["robot@data-agent.dkzlv.com"]
     }
-  ]
+  ],
 
-  // Routes wired at deploy time:
-  //   "routes": [{ "pattern": "api.data-agent.dkzlv.com/*", "custom_domain": true }]
-  // — left out of jsonc until first deploy so dev keeps using *.workers.dev
+  "routes": [{ "pattern": "api.data-agent.dkzlv.com", "custom_domain": true }]
 }

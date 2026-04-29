@@ -16,7 +16,7 @@ chat. Everything runs on Cloudflare.
 Original spec & all subtask history: `todo show d7943e`.
 
 Live URLs:
-- Web — https://data-agent-web.dkzlv.workers.dev
+- Web — https://data-agent.dkzlv.com
 - API — https://data-agent-api-gateway.dkzlv.workers.dev
 - Chat-agent — https://data-agent-chat-agent.dkzlv.workers.dev
 

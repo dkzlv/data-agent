@@ -400,11 +400,11 @@ function pickArtifactFields(v: Record<string, unknown>): ArtifactRef | null {
 
 /**
  * Artifact URLs land here as `/api/chats/<id>/artifacts/<id>` — a
- * relative path that, in the browser, resolves against
- * `data-agent-web.dkzlv.workers.dev` (the web worker) rather than the
- * api-gateway. The web worker doesn't host that route, so the fetch
- * 404s. Resolve against `window.__ENV__.API_URL` when running in the
- * browser; pass through unchanged for SSR / non-relative URLs.
+ * relative path that, in the browser, resolves against the web
+ * origin (`data-agent.dkzlv.com`) rather than the api-gateway. The
+ * web worker doesn't host that route, so the fetch 404s. Resolve
+ * against `window.__ENV__.API_URL` when running in the browser; pass
+ * through unchanged for SSR / non-relative URLs.
  *
  * Exported for reuse from `WorkspaceSidebar` (which builds an
  * ArtifactRef directly from the manifest list response).

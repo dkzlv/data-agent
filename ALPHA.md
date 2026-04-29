@@ -8,7 +8,7 @@ boring** — automation comes after we know what's actually painful.
 
 - [x] All 35 implementation subtasks of `d7943e` shipped
 - [x] Production URLs healthy:
-  - Web: <https://data-agent-web.dkzlv.workers.dev>
+  - Web: <https://data-agent.dkzlv.com>
   - API: <https://data-agent-api-gateway.dkzlv.workers.dev>
   - Chat-agent: <https://data-agent-chat-agent.dkzlv.workers.dev>
 - [x] Custom domains optional (subdomains work for alpha)
@@ -23,7 +23,7 @@ boring** — automation comes after we know what's actually painful.
 
 1. Confirm their email is at one of the allow-listed domains
    (`ALLOWED_EMAIL_DOMAINS` env var, currently `indent.com`).
-2. Send them <https://data-agent-web.dkzlv.workers.dev>.
+2. Send them <https://data-agent.dkzlv.com>.
 3. They sign up by entering their email — magic-link arrives from
    `robot@data-agent.dkzlv.com`. Tell them to look in spam if it's
    the first time.
