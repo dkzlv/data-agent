@@ -72,6 +72,9 @@ importers:
       '@cloudflare/think':
         specifier: ^0.4.2
         version: 0.4.2(@cloudflare/codemode@0.3.4(@modelcontextprotocol/sdk@1.29.0(@cfworker/json-schema@4.1.1)(zod@4.3.6))(ai@6.0.169(zod@4.3.6))(zod@4.3.6))(@cloudflare/shell@0.3.5(@modelcontextprotocol/sdk@1.29.0(@cfworker/json-schema@4.1.1)(zod@4.3.6))(ai@6.0.169(zod@4.3.6))(zod@4.3.6))(agents@0.11.9)(ai@6.0.169(zod@4.3.6))(zod@4.3.6)
+      '@data-agent/db':
+        specifier: workspace:*
+        version: link:../db
       '@data-agent/shared':
         specifier: workspace:*
         version: link:../shared
@@ -81,6 +84,12 @@ importers:
       ai:
         specifier: ^6.0.169
         version: 6.0.169(zod@4.3.6)
+      drizzle-orm:
+        specifier: ^0.45.2
+        version: 0.45.2(@cloudflare/workers-types@4.20260426.1)(@opentelemetry/api@1.9.0)(kysely@0.28.16)(postgres@3.4.9)
+      postgres:
+        specifier: ^3.4.9
+        version: 3.4.9
       workers-ai-provider:
         specifier: ^3.1.13
         version: 3.1.13(@ai-sdk/provider@3.0.9)(ai@6.0.169(zod@4.3.6))

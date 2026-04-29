@@ -172,11 +172,15 @@ dbProfilesRouter.post("/:id/test", async (c) => {
   // Decrypt creds, test, update status; never return creds in response.
   const { decryptCredentials } = await import("@data-agent/shared");
   const masterKey = await readSecret(c.env.MASTER_ENCRYPTION_KEY);
+  // Normalize Buffer→Uint8Array (postgres.js returns bytea as Node Buffer
+  // whose underlying ArrayBuffer is pool-allocated; copying into a fresh
+  // Uint8Array isolates the bytes for WebCrypto). Same fix applied in
+  // chat-agent/data-db.ts.
   const creds = (await decryptCredentials(
     masterKey,
     {
-      ciphertext: row.encryptedCredentials as Uint8Array,
-      encryptedDek: row.encryptedDek as Uint8Array,
+      ciphertext: new Uint8Array(row.encryptedCredentials as Uint8Array),
+      encryptedDek: new Uint8Array(row.encryptedDek as Uint8Array),
       keyVersion: row.encryptionKeyVersion,
     },
     { tenantId, dbProfileId: id }
