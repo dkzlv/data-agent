@@ -241,20 +241,20 @@ The spike is the most important task. Save energy for it; do not skimp. After th
 - [x] fde638 Scaffold web app
 - [x] 6c7414 Better Auth in control-plane
 - [x] 5d7e7d Wire web app to Better Auth
-- [ ] 4cd388 Session JWT minting + validation
-- [ ] c97933 Design control-plane DB schema
-- [ ] f0a0e9 Envelope encryption for DB creds
-- [ ] b75305 DB profile CRUD
-- [ ] b1f5fd Chat CRUD + members
-- [ ] 1b9bc9 Spike: Think + Workspace + codemode E2E
-- [ ] e1a679 WS upgrade routing
-- [ ] 382d1f Message persistence + resumable streaming
-- [ ] 039ac8 db.* ToolProvider
-- [ ] 5ea868 Postgres connection in DO
-- [ ] 5038e4 chart.* + artifact.* ToolProviders
-- [ ] abe549 Bundle vega-lite for sandbox
-- [ ] ef7df2 Wire AI SDK v6 + Workers AI (Kimi)
-- [ ] 64c889 System prompt + tool descriptions
+- [x] 4cd388 Session JWT minting + validation
+- [x] c97933 Design control-plane DB schema
+- [x] f0a0e9 Envelope encryption for DB creds
+- [x] b75305 DB profile CRUD
+- [x] b1f5fd Chat CRUD + members
+- [x] 1b9bc9 Spike: Think + Workspace + codemode E2E (✓ ALL FIVE CHECKS GREEN)
+- [x] e1a679 WS upgrade routing
+- [x] 382d1f Message persistence + resumable streaming
+- [x] 5ea868 Postgres connection in DO
+- [x] 039ac8 db.* ToolProvider (introspect + safe SELECT, 23 tests)
+- [x] 5038e4 chart.* + artifact.* ToolProviders
+- [x] abe549 Bundle vega-lite for sandbox (validate-only, no runtime bundle)
+- [x] ef7df2 Wire AI SDK v6 + Workers AI (Kimi) — sessionAffinity + reasoning
+- [x] 64c889 System prompt + tool descriptions
 - [ ] fa583c Chat UI
 - [ ] a4e12f Artifact viewer
 - [ ] 19183b Workspace file browser sidebar

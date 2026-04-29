@@ -1,5 +1,6 @@
 import { createFileRoute, Link } from "@tanstack/react-router";
 import { useQuery } from "@tanstack/react-query";
+import { ChatRoom } from "~/components/ChatRoom";
 import { chatsApi } from "~/lib/api";
 
 export const Route = createFileRoute("/app/chats/$chatId")({
@@ -11,10 +12,12 @@ function ChatDetail() {
   const chat = useQuery({
     queryKey: ["chat", chatId],
     queryFn: () => chatsApi.get(chatId),
+    // Avoid refetching while the chat is open — the WS is the source of truth.
+    staleTime: 60_000,
   });
 
   return (
-    <div className="mx-auto max-w-4xl space-y-4">
+    <div className="mx-auto flex h-full max-w-4xl flex-col gap-3">
       <p className="text-xs">
         <Link
           to="/app"
@@ -27,20 +30,7 @@ function ChatDetail() {
       {chat.error && (
         <p className="text-sm text-red-600 dark:text-red-400">{(chat.error as Error).message}</p>
       )}
-      {chat.data && (
-        <>
-          <header className="space-y-1">
-            <h1 className="text-2xl font-semibold tracking-tight">{chat.data.chat.title}</h1>
-            <p className="text-xs text-neutral-500">
-              {chat.data.members.length} member{chat.data.members.length === 1 ? "" : "s"}
-            </p>
-          </header>
-          <div className="rounded-lg border border-dashed border-neutral-300 p-8 text-center text-sm text-neutral-500 dark:border-neutral-700">
-            Chat UI lands in subtask fa583c — composer + WebSocket connection + streaming messages +
-            tool-call cards + artifact viewer.
-          </div>
-        </>
-      )}
+      {chat.data && <ChatRoom chatId={chatId} title={chat.data.chat.title} />}
     </div>
   );
 }

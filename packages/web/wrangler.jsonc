@@ -11,8 +11,10 @@
   },
 
   "vars": {
-    "API_URL": "https://api.data-agent.dkzlv.com",
-    "APP_URL": "https://app.data-agent.dkzlv.com"
+    // Until DNS is wired (custom domain + cookie scope), point at the
+    // workers.dev deployment so the alpha is testable end-to-end.
+    "API_URL": "https://data-agent-api-gateway.dkzlv.workers.dev",
+    "APP_URL": "https://data-agent-web.dkzlv.workers.dev"
   }
 
   // Routes wired at first deploy:

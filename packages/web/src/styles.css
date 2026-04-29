@@ -22,3 +22,112 @@ body {
     color: oklch(0.95 0 0);
   }
 }
+
+/* Minimal markdown rendering for chat messages. */
+.markdown-body p {
+  margin: 0.45em 0;
+}
+.markdown-body p:first-child {
+  margin-top: 0;
+}
+.markdown-body p:last-child {
+  margin-bottom: 0;
+}
+.markdown-body h1,
+.markdown-body h2,
+.markdown-body h3,
+.markdown-body h4 {
+  font-weight: 600;
+  margin: 0.8em 0 0.3em;
+  line-height: 1.25;
+}
+.markdown-body h1 {
+  font-size: 1.05rem;
+}
+.markdown-body h2 {
+  font-size: 1rem;
+}
+.markdown-body h3 {
+  font-size: 0.95rem;
+}
+.markdown-body ul,
+.markdown-body ol {
+  margin: 0.45em 0;
+  padding-left: 1.4em;
+}
+.markdown-body li {
+  margin: 0.15em 0;
+}
+.markdown-body code {
+  font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, monospace;
+  font-size: 0.85em;
+  background: rgba(0 0 0 / 0.06);
+  padding: 0.1em 0.35em;
+  border-radius: 0.25em;
+}
+@media (prefers-color-scheme: dark) {
+  .markdown-body code {
+    background: rgba(255 255 255 / 0.1);
+  }
+}
+.markdown-body pre {
+  margin: 0.6em 0;
+  padding: 0.6em 0.8em;
+  background: rgba(0 0 0 / 0.06);
+  border-radius: 0.4em;
+  overflow-x: auto;
+  font-size: 0.8rem;
+  line-height: 1.4;
+}
+.markdown-body pre code {
+  background: transparent;
+  padding: 0;
+}
+@media (prefers-color-scheme: dark) {
+  .markdown-body pre {
+    background: rgba(255 255 255 / 0.06);
+  }
+}
+.markdown-body table {
+  border-collapse: collapse;
+  margin: 0.5em 0;
+  font-size: 0.85em;
+}
+.markdown-body th,
+.markdown-body td {
+  border: 1px solid rgba(0 0 0 / 0.1);
+  padding: 0.25em 0.55em;
+  text-align: left;
+}
+@media (prefers-color-scheme: dark) {
+  .markdown-body th,
+  .markdown-body td {
+    border-color: rgba(255 255 255 / 0.15);
+  }
+}
+.markdown-body th {
+  background: rgba(0 0 0 / 0.04);
+  font-weight: 600;
+}
+@media (prefers-color-scheme: dark) {
+  .markdown-body th {
+    background: rgba(255 255 255 / 0.06);
+  }
+}
+.markdown-body a {
+  color: inherit;
+  text-decoration: underline;
+  text-underline-offset: 0.18em;
+}
+.markdown-body blockquote {
+  border-left: 3px solid rgba(0 0 0 / 0.15);
+  margin: 0.6em 0;
+  padding-left: 0.8em;
+  color: rgba(0 0 0 / 0.7);
+}
+@media (prefers-color-scheme: dark) {
+  .markdown-body blockquote {
+    border-color: rgba(255 255 255 / 0.2);
+    color: rgba(255 255 255 / 0.85);
+  }
+}

@@ -27,10 +27,18 @@ export async function createAuth(env: Env, ctx: ExecutionContext) {
     trustedOrigins: [env.APP_URL],
     advanced: {
       defaultCookieAttributes: {
-        sameSite: "lax",
+        // The web app and api-gateway live on different hosts during
+        // alpha (different *.workers.dev subdomains). Cross-origin
+        // cookie sharing requires SameSite=None + Secure. When we move
+        // both to subdomains of data-agent.dkzlv.com (same registrable
+        // domain), we'll downgrade to "lax" and set `domain: ".dkzlv.com"`.
+        sameSite: env.COOKIE_DOMAIN.startsWith(".") ? "lax" : "none",
         secure: env.API_URL.startsWith("https://"),
         httpOnly: true,
-        domain: env.COOKIE_DOMAIN || undefined,
+        // Only set explicit Domain when COOKIE_DOMAIN is a leading-dot
+        // value (registrable domain). Otherwise leave the cookie
+        // host-only on the api-gateway origin.
+        domain: env.COOKIE_DOMAIN.startsWith(".") ? env.COOKIE_DOMAIN : undefined,
       },
     },
     database: drizzleAdapter(db, {
