@@ -40,7 +40,8 @@ import {
 } from "lucide-react";
 import { ArtifactViewer, asArtifactRef } from "./ArtifactViewer";
 import { CodeBlock } from "./CodeBlock";
-import { WorkspaceSidebar, WorkspaceSidebarBody } from "./WorkspaceSidebar";
+import { WorkspaceSidebar, WorkspaceSidebarBody, useChatArtifacts } from "./WorkspaceSidebar";
+import { AppMobileNavTrigger } from "~/routes/app";
 import { getChatHost } from "~/lib/chat-host";
 import { type FriendlyError, toFriendlyError } from "~/lib/agent-error";
 import { Button } from "~/components/ui/button";
@@ -49,6 +50,7 @@ import { Skeleton } from "~/components/ui/skeleton";
 import { Alert, AlertDescription, AlertTitle } from "~/components/ui/alert";
 import { Badge } from "~/components/ui/badge";
 import {
+  ScrollAreaFades,
   ScrollAreaRoot,
   ScrollAreaScrollbar,
   ScrollAreaThumb,
@@ -340,36 +342,42 @@ export function ChatRoom({
   // because `chat.messages.length` becomes > 0.
   const showDemoSuggestions = isSampleDb && isReady && chat.messages.length === 0;
 
-  // Layout notes (papercut 247274):
+  // Layout notes (post-facelift 27f072):
   //
-  // 1. The workspace sidebar runs the full chat height so its left
-  //    border butts cleanly against the chat header's bottom border.
-  //    Earlier the header sat above both columns and the sidebar
-  //    started below it, leaving a visible notch where the two
-  //    borders met (image 1).
-  // 2. The outer row uses `min-h-0` (instead of `overflow-hidden`)
+  // 1. The chat occupies the AppShell's main column edge-to-edge —
+  //    we use `flex h-full` (rather than the older `h-[calc(100dvh-
+  //    7rem)]`) because the AppShell already gives us a bounded-height
+  //    main column and we don't want a magic-number subtraction baked
+  //    in. The chat column carries its own padding; the workspace
+  //    sidebar sits flush against the right viewport edge with no
+  //    outer padding, so charts and tables get the full breathing room.
+  // 2. Chat header height is fixed at h-14 to match the workspace
+  //    header height, so the two top borders sit on a single line
+  //    (no visible notch where the two columns meet).
+  // 3. The outer row uses `min-h-0` (instead of `overflow-hidden`)
   //    to bound flex children to the parent height. `overflow-hidden`
   //    on the row was clipping the composer's focus ring + 1px
   //    border-radius at the inner column edge — surfacing as a
-  //    squared-off top-left corner on the input box (image 2). The
-  //    Radix ScrollArea owns its own overflow handling internally,
-  //    so the row doesn't need to clip.
+  //    squared-off top-left corner on the input box. The base-ui
+  //    ScrollArea owns its own overflow handling internally.
   return (
-    <div className="flex h-[calc(100dvh-7rem)] min-h-0 gap-0">
-      <div className="flex min-w-0 min-h-0 flex-1 flex-col gap-3">
-        {displayedTitle ? (
-          <header className="flex items-center justify-between gap-3 border-b border-border pb-3">
-            <h1 className="truncate text-lg font-semibold tracking-tight sm:text-xl">
-              {displayedTitle}
-            </h1>
-            <div className="flex items-center gap-2 text-xs text-muted-foreground">
-              <PresenceBadges users={presence} directory={memberDirectory} />
-              <MembersPopover members={members} active={presence} />
-              <WorkspaceMobileTrigger chatId={chatId} />
-            </div>
-          </header>
-        ) : null}
+    <div className="flex h-full min-h-0 flex-1 gap-0">
+      <div className="flex min-h-0 min-w-0 flex-1 flex-col">
+        <header className="flex h-14 shrink-0 items-center gap-2 border-b border-border px-4 sm:px-6">
+          <AppMobileNavTrigger />
+          <h1 className="min-w-0 flex-1 truncate text-base font-semibold tracking-tight sm:text-lg">
+            {displayedTitle ?? "Chat"}
+          </h1>
+          <div className="flex items-center gap-2 text-xs text-muted-foreground">
+            <PresenceBadges users={presence} directory={memberDirectory} />
+            <MembersPopover members={members} active={presence} />
+            <WorkspaceMobileTrigger chatId={chatId} />
+          </div>
+        </header>
 
+        {/* Message list spans the full chat column — no card/border
+            framing, just a scroll viewport with edge fades that hint
+            at scrollable content. */}
         {isReady ? (
           <MessageList
             messages={chat.messages as UIMessage[]}
@@ -381,20 +389,27 @@ export function ChatRoom({
           <MessageListSkeleton />
         )}
 
-        {showDemoSuggestions && (
-          <DemoSuggestions
-            prompts={EMPLOYEES_DEMO_PROMPTS}
-            disabled={composerLocked || isTurnInFlight}
-            onPick={handleSend}
+        {/* Composer sits flush at the bottom of the chat column. The
+            demo-prompt chips ride above it (only on a fresh
+            sample-DB chat). Both get a thin top border so the
+            composer feels anchored without re-introducing a "card"
+            around it. */}
+        <div className="shrink-0 border-t border-border bg-background px-4 py-3 sm:px-6">
+          {showDemoSuggestions && (
+            <DemoSuggestions
+              prompts={EMPLOYEES_DEMO_PROMPTS}
+              disabled={composerLocked || isTurnInFlight}
+              onPick={handleSend}
+              className="mb-3"
+            />
+          )}
+          <Composer
+            locked={composerLocked}
+            isStreaming={isTurnInFlight}
+            onSubmit={handleSend}
+            onStop={handleStop}
           />
-        )}
-
-        <Composer
-          locked={composerLocked}
-          isStreaming={isTurnInFlight}
-          onSubmit={handleSend}
-          onStop={handleStop}
-        />
+        </div>
       </div>
 
       <WorkspaceSidebar chatId={chatId} />
@@ -410,13 +425,15 @@ function DemoSuggestions({
   prompts,
   disabled,
   onPick,
+  className,
 }: {
   prompts: { label: string; prompt: string }[];
   disabled: boolean;
   onPick: (text: string) => void;
+  className?: string;
 }) {
   return (
-    <div className="flex flex-wrap gap-2" aria-label="Demo prompt suggestions">
+    <div className={cn("flex flex-wrap gap-2", className)} aria-label="Demo prompt suggestions">
       {prompts.map((p) => (
         <Button
           key={p.label}
@@ -436,16 +453,40 @@ function DemoSuggestions({
 
 /**
  * Mobile-only header button that opens the workspace as a slide-over
- * Sheet. The desktop sidebar is permanently visible (md:flex) so this
- * is hidden on md+.
+ * Sheet. Mirrors the desktop sidebar's visibility rule: the trigger
+ * doesn't render until the chat has at least one artifact (we don't
+ * tease an empty workspace). When artifacts exist, the count is
+ * surfaced as a small badge on the trigger so the user sees the
+ * indicator without opening the sheet.
  */
 function WorkspaceMobileTrigger({ chatId }: { chatId: string }) {
   const [open, setOpen] = useState(false);
+  const list = useChatArtifacts(chatId);
+  const count = list.data?.length ?? 0;
+  if (count === 0) return null;
+
   return (
     <Sheet open={open} onOpenChange={setOpen}>
       <SheetTrigger asChild>
-        <Button variant="ghost" size="icon-sm" className="md:hidden" aria-label="Open workspace">
+        <Button
+          variant="ghost"
+          size="icon-sm"
+          className="relative md:hidden"
+          aria-label={`Open workspace (${count} artifact${count === 1 ? "" : "s"})`}
+        >
           <ChartBar className="h-4 w-4" />
+          {/* Count badge — sits at the top-right corner of the icon
+              button. Cap displayed value at 9+ so the badge stays a
+              circle even on long-running chats. */}
+          <span
+            aria-hidden
+            className={cn(
+              "absolute -right-1 -top-1 inline-flex h-4 min-w-4 items-center justify-center rounded-full px-1",
+              "bg-primary text-[10px] font-semibold leading-none text-primary-foreground"
+            )}
+          >
+            {count > 9 ? "9+" : count}
+          </span>
         </Button>
       </SheetTrigger>
       <SheetContent side="right" className="w-80 p-0">
@@ -459,23 +500,27 @@ function WorkspaceMobileTrigger({ chatId }: { chatId: string }) {
 }
 
 function MessageListSkeleton() {
-  // Roughly mirrors the MessageList container + a few message bubbles.
-  // Three bubbles: user (right), assistant (left), assistant streaming
-  // (left, longer). Heights chosen to match the real bubble padding.
+  // Mirrors the resolved MessageList: full-bleed scroll surface, no
+  // card framing, content centred in a 4xl column. Three bubble
+  // skeletons — user (right), assistant (left), assistant streaming
+  // (left, longer) — at heights that match the real bubble padding so
+  // the layout doesn't pop when the WS resolves.
   return (
     <div
-      className="flex-1 space-y-4 overflow-hidden rounded-lg border border-border bg-card p-4"
+      className="min-h-0 flex-1 overflow-hidden bg-background"
       aria-busy="true"
       aria-label="Loading chat"
     >
-      <div className="flex justify-end">
-        <Skeleton className="h-9 w-2/3 rounded-2xl sm:w-1/2" />
-      </div>
-      <div className="flex justify-start">
-        <Skeleton className="h-16 w-3/4 rounded-2xl sm:w-2/3" />
-      </div>
-      <div className="flex justify-start">
-        <Skeleton className="h-12 w-1/2 rounded-2xl" />
+      <div className="mx-auto w-full max-w-4xl space-y-4 px-4 py-4 sm:px-6">
+        <div className="flex justify-end">
+          <Skeleton className="h-9 w-2/3 rounded-2xl sm:w-1/2" />
+        </div>
+        <div className="flex justify-start">
+          <Skeleton className="h-16 w-3/4 rounded-2xl sm:w-2/3" />
+        </div>
+        <div className="flex justify-start">
+          <Skeleton className="h-12 w-1/2 rounded-2xl" />
+        </div>
       </div>
     </div>
   );
@@ -546,10 +591,17 @@ function MessageList({
     setStickToBottom(distanceFromBottom < 32);
   }, []);
 
+  // Full-bleed message list (no card/border) so the chat reads as a
+  // single conversation surface that fills the column. Top/bottom
+  // fade overlays from `ScrollAreaFades` cue the user that content
+  // exists beyond the visible region — replacing the prior border
+  // affordance. Inner padding lives on the content wrapper (not the
+  // viewport) so the fades sit on the very edge of the scroll
+  // surface, matching where the scrollbar appears.
   return (
-    <ScrollAreaRoot className="flex-1 rounded-lg border border-border bg-card">
-      <ScrollAreaViewport ref={viewportRef} onScroll={onScroll} className="h-full max-h-full p-4">
-        <div className="space-y-4">
+    <ScrollAreaRoot className="min-h-0 flex-1 bg-background">
+      <ScrollAreaViewport ref={viewportRef} onScroll={onScroll} className="h-full max-h-full">
+        <div className="mx-auto w-full max-w-4xl space-y-4 px-4 py-4 sm:px-6">
           {messages.length === 0 && <EmptyState isSampleDb={isSampleDb} />}
           {messages.map((m) => (
             <MessageBubble key={m.id} message={m} />
@@ -578,6 +630,7 @@ function MessageList({
       <ScrollAreaScrollbar>
         <ScrollAreaThumb />
       </ScrollAreaScrollbar>
+      <ScrollAreaFades color="text-background" />
     </ScrollAreaRoot>
   );
 }
@@ -1288,7 +1341,14 @@ function idToColor(id: string): string {
  * textarea stays enabled so users can prep their next prompt; only
  * the *submit* path is gated.
  */
-function Composer({
+// Exported so the route-level pending skeleton in
+// `app.chats.$chatId.tsx` can render the *same* chrome with
+// `locked=true` — that's the only way to guarantee the loading state
+// is pixel-identical to the resolved state, so there's no layout
+// shift when the WS opens. Keeping the layout stable beats trying to
+// approximate the height with a `<Skeleton/>` block (which previously
+// drifted from ~64px to ~115px once the InputGroup hydrated).
+export function Composer({
   locked,
   isStreaming,
   onSubmit,
@@ -1360,20 +1420,6 @@ function Composer({
           aria-label="Message"
         />
         <InputGroupAddon align="block-end" className="px-2 pb-2">
-          <span className="hidden text-[11px] text-muted-foreground sm:inline">
-            <kbd className="rounded border border-border bg-muted/60 px-1 font-mono text-[10px]">
-              Enter
-            </kbd>{" "}
-            send ·{" "}
-            <kbd className="rounded border border-border bg-muted/60 px-1 font-mono text-[10px]">
-              Shift
-            </kbd>
-            +
-            <kbd className="rounded border border-border bg-muted/60 px-1 font-mono text-[10px]">
-              Enter
-            </kbd>{" "}
-            newline
-          </span>
           {isStreaming ? (
             <InputGroupButton
               type="button"

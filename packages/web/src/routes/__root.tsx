@@ -2,6 +2,7 @@ import { HeadContent, Outlet, Scripts, createRootRoute } from "@tanstack/react-r
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { createServerFn } from "@tanstack/react-start";
 import { useState, type ReactNode } from "react";
+import { Agentation } from "agentation";
 import { ThemeProvider, themeBootScript } from "~/components/theme-provider";
 import { TooltipProvider } from "~/components/ui/tooltip";
 import "../styles.css";
@@ -52,6 +53,13 @@ function RootComponent() {
         <QueryClientProvider client={queryClient}>
           <TooltipProvider delayDuration={150}>
             <Outlet />
+            {/*
+              Agentation is a dev-only visual feedback tool — click DOM
+              elements to capture selectors + notes for an AI agent. We
+              gate it on import.meta.env.DEV so the toolbar (and its
+              bundle) never ships to prod.
+            */}
+            {import.meta.env.DEV ? <Agentation /> : null}
           </TooltipProvider>
         </QueryClientProvider>
       </ThemeProvider>

@@ -16,6 +16,7 @@ import { findSampleProfile } from "~/lib/sample-db";
 import { Button } from "~/components/ui/button";
 import { Alert, AlertDescription, AlertTitle } from "~/components/ui/alert";
 import { Skeleton } from "~/components/ui/skeleton";
+import { AppMobileNavTrigger, AppPageScroll } from "~/routes/app";
 
 export const Route = createFileRoute("/app/welcome")({
   component: WelcomeRoute,
@@ -62,7 +63,11 @@ function WelcomeRoute() {
   const isLoading = chats.isLoading || profiles.isLoading;
 
   return (
+    <AppPageScroll>
     <div className="mx-auto max-w-3xl space-y-8 py-6 sm:py-10">
+      <div className="md:hidden">
+        <AppMobileNavTrigger />
+      </div>
       <header className="space-y-2 text-center sm:text-left">
         <h1 className="text-3xl font-semibold tracking-tight sm:text-4xl">
           Welcome to data-agent.
@@ -151,6 +156,7 @@ function WelcomeRoute() {
         </Alert>
       )}
     </div>
+    </AppPageScroll>
   );
 }
 

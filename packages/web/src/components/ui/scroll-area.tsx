@@ -25,11 +25,21 @@ import { cn } from "~/lib/utils";
 
 // --- compound parts (escape hatch for callers that need refs / fine
 // control over viewport) ---
+//
+// `group/scroll-area` is intentionally on Root so siblings (notably
+// `ScrollAreaFades`) can read base-ui's overflow data attributes via
+// Tailwind group selectors (`group-data-[overflow-y-start]/...`).
+// Without it the fade overlays can't tell whether content is scrolled
+// off the top/bottom and we lose the affordance.
 const ScrollAreaRoot = React.forwardRef<
   HTMLDivElement,
   React.ComponentPropsWithoutRef<typeof Base.Root>
 >(({ className, ...props }, ref) => (
-  <Base.Root ref={ref} className={cn("relative overflow-hidden", className)} {...props} />
+  <Base.Root
+    ref={ref}
+    className={cn("group/scroll-area relative overflow-hidden", className)}
+    {...props}
+  />
 ));
 ScrollAreaRoot.displayName = "ScrollAreaRoot";
 
@@ -108,6 +118,94 @@ ScrollArea.displayName = "ScrollArea";
 // Backward-compatible re-export — the prior file exported `ScrollBar`.
 const ScrollBar = ScrollAreaScrollbar;
 
+/**
+ * ScrollAreaFades — gradient overlays that fade in when content
+ * overflows on either side. Pattern lifted from indent-1's
+ * `js_modules/client/src/components/ui/scroll-area/scroll-area.tsx`:
+ * place as a sibling of `ScrollAreaViewport` inside a
+ * `ScrollAreaRoot` (or any element carrying the
+ * `group/scroll-area` class) so the fades can read overflow state
+ * from base-ui's `data-overflow-y-start` / `data-overflow-y-end`
+ * attributes via group selectors.
+ *
+ * The gradient pulls from `currentColor` → `transparent`, so set
+ * `color` to a `text-*` utility matching the scroll-area's own
+ * background. Default is `text-card` (matches the message-list
+ * panel) but consumers can override for sidebars, popovers, etc.
+ *
+ * Why CSS-only (vs. measuring scrollTop in JS): base-ui already
+ * computes the overflow state for its scrollbar visibility; reusing
+ * it avoids a parallel rAF loop and keeps the fade in sync with the
+ * scrollbar's auto-hide transitions.
+ */
+type ScrollAreaFadesOrientation = "vertical" | "horizontal" | "both";
+
+const ScrollAreaFades = ({
+  color = "text-card",
+  orientation = "vertical",
+  size = "1rem",
+}: {
+  /** Tailwind text utility for the fade color (must match background). */
+  color?: `text-${string}`;
+  orientation?: ScrollAreaFadesOrientation;
+  /** Length of each fade band along the scroll axis. */
+  size?: string;
+}) => {
+  const showVertical = orientation === "vertical" || orientation === "both";
+  const showHorizontal = orientation === "horizontal" || orientation === "both";
+  const base =
+    "pointer-events-none absolute z-10 from-current to-transparent opacity-0 transition-opacity duration-150";
+  return (
+    <>
+      {showVertical && (
+        <>
+          <div
+            aria-hidden
+            style={{ height: size }}
+            className={cn(
+              base,
+              "inset-x-0 top-0 bg-linear-to-b group-data-[overflow-y-start]/scroll-area:opacity-100",
+              color
+            )}
+          />
+          <div
+            aria-hidden
+            style={{ height: size }}
+            className={cn(
+              base,
+              "inset-x-0 bottom-0 bg-linear-to-t group-data-[overflow-y-end]/scroll-area:opacity-100",
+              color
+            )}
+          />
+        </>
+      )}
+      {showHorizontal && (
+        <>
+          <div
+            aria-hidden
+            style={{ width: size }}
+            className={cn(
+              base,
+              "inset-y-0 left-0 bg-linear-to-r group-data-[overflow-x-start]/scroll-area:opacity-100",
+              color
+            )}
+          />
+          <div
+            aria-hidden
+            style={{ width: size }}
+            className={cn(
+              base,
+              "inset-y-0 right-0 bg-linear-to-l group-data-[overflow-x-end]/scroll-area:opacity-100",
+              color
+            )}
+          />
+        </>
+      )}
+    </>
+  );
+};
+ScrollAreaFades.displayName = "ScrollAreaFades";
+
 export {
   ScrollArea,
   ScrollBar,
@@ -115,4 +213,5 @@ export {
   ScrollAreaViewport,
   ScrollAreaScrollbar,
   ScrollAreaThumb,
+  ScrollAreaFades,
 };

@@ -1,6 +1,6 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { useQuery } from "@tanstack/react-query";
-import { ChatRoom } from "~/components/ChatRoom";
+import { ChatRoom, Composer } from "~/components/ChatRoom";
 import { Skeleton } from "~/components/ui/skeleton";
 import { Alert, AlertDescription } from "~/components/ui/alert";
 import { chatsApi, dbProfilesApi } from "~/lib/api";
@@ -39,51 +39,55 @@ function ChatDetail() {
     : undefined;
   const isSampleDb = profile ? isSampleProfile(profile) : false;
 
+  // Chat detail uses a full-height flex layout that fills the AppShell
+  // main column edge-to-edge. The workspace sidebar inside ChatRoom
+  // pins flush to the right of the viewport (no parent padding /
+  // max-width) so the chat column gets the rest of the row. The
+  // earlier `mx-auto max-w-6xl px-* py-*` wrapper centred everything
+  // inside a 6xl box, which made the workspace look like it was
+  // floating in negative space on wide screens.
   return (
-    <div className="flex h-full flex-col gap-3">
+    <div className="flex h-full min-h-0 flex-1 flex-col">
       {chat.isLoading && <ChatPageSkeleton />}
 
       {chat.error && (
-        <Alert variant="destructive">
-          <AlertDescription>{(chat.error as Error).message}</AlertDescription>
-        </Alert>
+        <div className="px-4 py-6 sm:px-6">
+          <Alert variant="destructive">
+            <AlertDescription>{(chat.error as Error).message}</AlertDescription>
+          </Alert>
+        </div>
       )}
 
       {chat.data && (
-        <div className="mx-auto w-full max-w-6xl flex-1 overflow-hidden">
-          <ChatRoom
-            chatId={chatId}
-            title={chat.data.chat.title}
-            members={chat.data.members}
-            isSampleDb={isSampleDb}
-          />
-        </div>
+        <ChatRoom
+          chatId={chatId}
+          title={chat.data.chat.title}
+          members={chat.data.members}
+          isSampleDb={isSampleDb}
+        />
       )}
     </div>
   );
 }
 
 function ChatPageSkeleton() {
-  // Mirrors the resolved layout: page header (title + actions row),
-  // message list panel, composer. Heights match the real component
-  // (h-[calc(100dvh-7rem)] container, ~68px header, flex-1 list,
-  // composer ~5rem). Sized to match, so the layout doesn't pop when
-  // the chat resolves.
+  // Mirrors the resolved layout: full-height chat column (h-14 header +
+  // full-bleed message list + composer footer). The workspace sidebar
+  // is intentionally NOT skeletoned here — it only ever mounts when
+  // the chat has at least one artifact (see `WorkspaceSidebar`), so
+  // assuming "no artifacts" during initial load is the honest default.
+  // The earlier route skeleton flashed a phantom workspace column with
+  // 5 fake rows, which previewed a feature that often doesn't even
+  // apply to the chat being opened.
   return (
-    <div
-      className="mx-auto flex h-[calc(100dvh-7rem)] w-full max-w-6xl flex-col gap-3"
-      aria-busy="true"
-      aria-label="Loading chat"
-    >
-      <div className="flex items-center justify-between gap-3 border-b border-border pb-3">
-        <Skeleton className="h-7 w-56" />
-        <div className="flex gap-2">
-          <Skeleton className="h-8 w-20" />
+    <div className="flex h-full min-h-0 flex-1" aria-busy="true" aria-label="Loading chat">
+      <div className="flex min-h-0 min-w-0 flex-1 flex-col">
+        <div className="flex h-14 shrink-0 items-center justify-between gap-3 border-b border-border px-4 sm:px-6">
+          <Skeleton className="h-5 w-56" />
+          <Skeleton className="h-7 w-20" />
         </div>
-      </div>
-      <div className="flex flex-1 gap-0 overflow-hidden">
-        <div className="flex min-w-0 flex-1 flex-col gap-3">
-          <div className="flex-1 space-y-4 rounded-lg border border-border bg-card p-4">
+        <div className="min-h-0 flex-1 overflow-hidden">
+          <div className="mx-auto w-full max-w-4xl space-y-4 px-4 py-4 sm:px-6">
             <div className="flex justify-end">
               <Skeleton className="h-9 w-2/3 rounded-2xl sm:w-1/2" />
             </div>
@@ -94,29 +98,20 @@ function ChatPageSkeleton() {
               <Skeleton className="h-12 w-1/2 rounded-2xl" />
             </div>
           </div>
-          <div className="flex items-end gap-2">
-            <Skeleton className="h-12 flex-1" />
-            <Skeleton className="h-12 w-20" />
-          </div>
         </div>
-        <aside className="hidden h-full w-72 shrink-0 flex-col border-l border-border bg-sidebar md:flex">
-          <div className="flex items-center justify-between border-b border-sidebar-border px-3 py-2.5">
-            <Skeleton className="h-3 w-20" />
-            <Skeleton className="h-4 w-6 rounded-full" />
-          </div>
-          <ul className="py-1">
-            {Array.from({ length: 5 }).map((_, i) => (
-              <li key={i} className="flex items-center gap-2 px-3 py-2">
-                <Skeleton className="h-3.5 w-3.5 rounded-sm" />
-                <Skeleton
-                  className="h-3.5 flex-1"
-                  style={{ maxWidth: `${65 + ((i * 11) % 25)}%` }}
-                />
-                <Skeleton className="h-3 w-6" />
-              </li>
-            ))}
-          </ul>
-        </aside>
+        {/* Render the *real* Composer (locked) instead of a sized
+            Skeleton so the loading state is pixel-identical to the
+            resolved chat. A naive `<Skeleton h-16/>` drifted from
+            ~64px to ~115px once the InputGroup chrome hydrated and
+            the layout visibly jumped on every nav into a chat. */}
+        <div className="shrink-0 border-t border-border bg-background px-4 py-3 sm:px-6">
+          <Composer
+            locked
+            isStreaming={false}
+            onSubmit={() => {}}
+            onStop={() => {}}
+          />
+        </div>
       </div>
     </div>
   );

@@ -1,10 +1,34 @@
-import { createFileRoute, Link, Outlet, redirect } from "@tanstack/react-router";
-import { Menu, MessageSquare, Database, LogOut } from "lucide-react";
+/**
+ * AppShell — global frame for /app/*.
+ *
+ * Layout (post-facelift 27f072): permanent left sidebar on md+ that
+ * carries brand, primary nav, an inline chats list, and the footer
+ * actions (theme toggle + sign out). Mobile gets the same content via
+ * a Sheet triggered from each route's own header — every route
+ * renders an `<AppMobileNavTrigger/>` (sub-md only) inside its title
+ * row, so the hamburger sits next to the page title rather than
+ * floating in a generic top bar. Chat detail puts the trigger next to
+ * the chat title; list routes put it next to the page heading.
+ *
+ * Each child route owns its own scrolling — we don't wrap the main
+ * column in a single ScrollArea here because chat detail has its own
+ * internal flex column with bounded message-list and composer
+ * regions, which would conflict with an outer scroller. Non-chat
+ * routes use `<AppPageScroll/>` to opt in to a scrollable main area.
+ */
+import { createFileRoute, Outlet, redirect } from "@tanstack/react-router";
+import { Menu } from "lucide-react";
 import { useState } from "react";
 import { authClient } from "~/lib/auth-client";
 import { Button } from "~/components/ui/button";
-import { Sheet, SheetContent, SheetHeader, SheetTitle, SheetTrigger } from "~/components/ui/sheet";
-import { ThemeToggle } from "~/components/theme-toggle";
+import {
+  Sheet,
+  SheetContent,
+  SheetHeader,
+  SheetTitle,
+  SheetTrigger,
+} from "~/components/ui/sheet";
+import { AppSidebar } from "~/components/AppSidebar";
 
 /**
  * Cache the session result for the lifetime of the page so we don't
@@ -41,103 +65,67 @@ export const Route = createFileRoute("/app")({
   component: AppShell,
 });
 
-const navLinkBase =
-  "text-sm text-muted-foreground transition-colors hover:text-foreground [&.active]:text-foreground [&.active]:font-medium";
-
-const mobileNavLinkBase =
-  "flex items-center gap-3 rounded-md px-3 py-2 text-sm text-muted-foreground transition-colors hover:bg-accent hover:text-accent-foreground [&.active]:bg-accent [&.active]:text-foreground";
-
 function AppShell() {
-  const [mobileOpen, setMobileOpen] = useState(false);
-  async function handleSignOut() {
-    await authClient.signOut();
-    window.location.href = "/login";
-  }
-
   return (
-    <div className="flex min-h-dvh flex-col">
-      <header className="sticky top-0 z-30 flex items-center gap-3 border-b border-border bg-background/80 px-4 py-3 backdrop-blur supports-[backdrop-filter]:bg-background/60">
-        {/* Mobile menu trigger — only visible below md. */}
-        <Sheet open={mobileOpen} onOpenChange={setMobileOpen}>
-          <SheetTrigger asChild>
-            <Button
-              variant="ghost"
-              size="icon-sm"
-              className="md:hidden"
-              aria-label="Open navigation"
-            >
-              <Menu className="h-4 w-4" />
-            </Button>
-          </SheetTrigger>
-          <SheetContent side="left" className="w-72 p-0">
-            <SheetHeader className="border-b border-border p-4">
-              <SheetTitle className="font-mono text-xs uppercase tracking-widest text-muted-foreground">
-                data-agent
-              </SheetTitle>
-            </SheetHeader>
-            <nav className="flex flex-col gap-1 p-2">
-              <Link
-                to="/app"
-                activeOptions={{ exact: true }}
-                onClick={() => setMobileOpen(false)}
-                className={mobileNavLinkBase}
-              >
-                <MessageSquare className="h-4 w-4" />
-                Chats
-              </Link>
-              <Link
-                to="/app/db-profiles"
-                onClick={() => setMobileOpen(false)}
-                className={mobileNavLinkBase}
-              >
-                <Database className="h-4 w-4" />
-                Connections
-              </Link>
-              <button
-                type="button"
-                onClick={handleSignOut}
-                className={`${mobileNavLinkBase} mt-2 cursor-pointer text-left`}
-              >
-                <LogOut className="h-4 w-4" />
-                Sign out
-              </button>
-            </nav>
-          </SheetContent>
-        </Sheet>
+    <div className="flex h-dvh min-h-0 overflow-hidden bg-background">
+      {/* Desktop sidebar — permanent on md+. */}
+      <aside className="hidden h-full w-64 shrink-0 border-r border-sidebar-border md:flex md:flex-col">
+        <AppSidebar />
+      </aside>
 
-        {/* Brand + nav (desktop) */}
-        <Link
-          to="/app"
-          className="font-mono text-xs uppercase tracking-widest text-muted-foreground"
-        >
-          data-agent
-        </Link>
-        <nav className="hidden gap-5 md:flex md:ml-4">
-          <Link to="/app" activeOptions={{ exact: true }} className={navLinkBase}>
-            Chats
-          </Link>
-          <Link to="/app/db-profiles" className={navLinkBase}>
-            Connections
-          </Link>
-        </nav>
-
-        {/* Right cluster */}
-        <div className="ml-auto flex items-center gap-1">
-          <ThemeToggle />
-          <Button
-            type="button"
-            variant="ghost"
-            size="sm"
-            onClick={handleSignOut}
-            className="hidden md:inline-flex"
-          >
-            Sign out
-          </Button>
-        </div>
-      </header>
-      <main className="flex-1 px-4 py-6 sm:px-6">
+      {/* Main column. Routes own their own scroll container — non-chat
+          routes wrap themselves in <AppPageScroll/>; chat detail uses
+          its own bounded flex layout. */}
+      <div className="flex h-full min-w-0 flex-1 flex-col">
         <Outlet />
-      </main>
+      </div>
     </div>
+  );
+}
+
+/**
+ * AppPageScroll — wraps page content (non-chat routes) in a vertical
+ * scroll container so the main column scrolls independently of the
+ * sidebar. Use as the top-level element of a route component.
+ *
+ * Native `overflow-y-auto` rather than the Radix-style ScrollArea
+ * because: (a) page content is page-sized markup that browsers scroll
+ * very well natively, and (b) the only place we benefited from the
+ * custom thumb was the chat history (kept) and the workspace list
+ * (kept) — a third decorated scrollbar on the parent steals the eye.
+ */
+export function AppPageScroll({ children }: { children: React.ReactNode }) {
+  return <div className="flex-1 overflow-y-auto px-4 py-6 sm:px-6">{children}</div>;
+}
+
+/**
+ * AppMobileNavTrigger — hamburger that opens the AppSidebar in a
+ * Sheet on sub-md. Each route renders its own instance inside its
+ * title row so the trigger is co-located with the page heading. The
+ * Sheet is stateless other than the shared React Query caches, so
+ * mounting multiple instances across routes is fine (only one is
+ * visible at a time).
+ */
+export function AppMobileNavTrigger() {
+  const [open, setOpen] = useState(false);
+  return (
+    <Sheet open={open} onOpenChange={setOpen}>
+      <SheetTrigger asChild>
+        <Button
+          variant="ghost"
+          size="icon-sm"
+          aria-label="Open navigation"
+          className="md:hidden"
+        >
+          <Menu className="h-4 w-4" />
+        </Button>
+      </SheetTrigger>
+      <SheetContent side="left" className="w-72 p-0">
+        <SheetHeader className="sr-only">
+          <SheetTitle>Navigation</SheetTitle>
+        </SheetHeader>
+        <AppSidebar onNavigate={() => setOpen(false)} />
+      </SheetContent>
+    </Sheet>
   );
 }

@@ -11,19 +11,26 @@
  * appear without a page reload — long-term we'll push these via the WS
  * channel, but polling is fine until volume warrants it.
  *
- * Two layouts:
- *   - Desktop (md+): permanent column on the right of the chat.
- *   - Mobile: rendered inside a Sheet via <WorkspaceSidebarSheet>.
- *     The same body is shared; only the chrome differs.
+ * Visibility rules:
+ *   - Desktop (md+): the permanent column **only mounts when the chat
+ *     has at least one artifact**. Until then the chat column owns
+ *     the full row width — there's no value in showing an empty
+ *     "Workspace" sidebar that just teases future content. The
+ *     artifact-count query lives in a small shared hook
+ *     (`useArtifactCount`) so the chat header's mobile trigger and
+ *     this component see the same number without double-fetching.
+ *   - Mobile: the Sheet is opened on demand from the chat header's
+ *     workspace button (see `WorkspaceMobileTrigger` in ChatRoom).
+ *     The trigger renders a numeric badge whenever artifacts exist
+ *     so the user sees the count without opening the sheet.
  */
 import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { BarChart3, FileText, LineChart, ScatterChart, X } from "lucide-react";
 import { ArtifactViewer, resolveArtifactUrl, type ArtifactRef } from "./ArtifactViewer";
-import { chatsApi } from "~/lib/api";
+import { chatsApi, type ArtifactSummary } from "~/lib/api";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "~/components/ui/dialog";
 import { ScrollArea } from "~/components/ui/scroll-area";
-import { Skeleton } from "~/components/ui/skeleton";
 import { Badge } from "~/components/ui/badge";
 import { Button } from "~/components/ui/button";
 import { cn } from "~/lib/utils";
@@ -32,10 +39,44 @@ interface WorkspaceSidebarProps {
   chatId: string;
 }
 
+/**
+ * Shared artifact-list query. Both the desktop sidebar and the mobile
+ * trigger badge in ChatRoom call this with the same `chatId`, so React
+ * Query dedupes the fetch. Centralising the polling cadence and the
+ * `select` projection keeps both surfaces honest about the same data.
+ */
+export function useChatArtifacts(chatId: string) {
+  return useQuery({
+    queryKey: ["chat-artifacts", chatId],
+    queryFn: () => chatsApi.listArtifacts(chatId),
+    refetchInterval: 8_000,
+    refetchIntervalInBackground: false,
+    select: (r) => r.artifacts as ArtifactSummary[],
+  });
+}
+
 export function WorkspaceSidebar({ chatId }: WorkspaceSidebarProps) {
+  const list = useChatArtifacts(chatId);
+  const count = list.data?.length ?? 0;
+
+  // Don't render the desktop column until the chat has produced at
+  // least one artifact. Mounting an empty workspace-with-empty-state
+  // teased a feature the user hasn't engaged with yet, and stole
+  // ~288px of horizontal width from the chat column for no reason.
+  // Once an artifact exists the column appears (the chat content
+  // re-flows accordingly — there's a one-time width shift, but it's
+  // tied to a real signal: the agent just produced something).
+  if (count === 0) return null;
+
+  // Matches the AppShell main-column dimensions: workspace sits flush
+  // against the right viewport edge with no parent padding/margin so
+  // charts get the full sidebar width. Header is fixed at h-14 so its
+  // bottom border lands on the same horizontal line as the chat
+  // column's title row — without that, the two borders met at
+  // slightly different heights and left a visible notch.
   return (
     <aside className="hidden h-full w-72 shrink-0 flex-col border-l border-border bg-sidebar md:flex">
-      <WorkspaceContent chatId={chatId} />
+      <WorkspaceContent list={list} />
     </aside>
   );
 }
@@ -43,7 +84,9 @@ export function WorkspaceSidebar({ chatId }: WorkspaceSidebarProps) {
 /**
  * Body that's reused between the permanent desktop sidebar and the
  * mobile Sheet. Owns its own dialog state so the artifact preview
- * works the same in either context.
+ * works the same in either context. The list query is hoisted to
+ * the parent (so the desktop sidebar can decide whether to mount at
+ * all, and the mobile trigger can read the count) and passed in.
  *
  * `inSheet` shifts the header so the artifact-count badge doesn't
  * sit underneath the Sheet's auto-injected close button (X) — the
@@ -51,22 +94,23 @@ export function WorkspaceSidebar({ chatId }: WorkspaceSidebarProps) {
  * landing exactly there. We pad the header right so they don't
  * collide visually or steal each other's clicks.
  */
-function WorkspaceContent({ chatId, inSheet = false }: { chatId: string; inSheet?: boolean }) {
-  const list = useQuery({
-    queryKey: ["chat-artifacts", chatId],
-    queryFn: () => chatsApi.listArtifacts(chatId),
-    refetchInterval: 8_000,
-    refetchIntervalInBackground: false,
-  });
+function WorkspaceContent({
+  list,
+  inSheet = false,
+}: {
+  list: ReturnType<typeof useChatArtifacts>;
+  inSheet?: boolean;
+}) {
   const [selected, setSelected] = useState<ArtifactRef | null>(null);
-
-  const artifacts = list.data?.artifacts ?? [];
+  const artifacts = list.data ?? [];
 
   return (
     <>
       <header
         className={cn(
-          "flex items-center justify-between border-b border-sidebar-border px-3 py-2.5",
+          // h-14 mirrors the chat column's header so the two horizontal
+          // borders line up exactly where the columns meet.
+          "flex h-14 shrink-0 items-center justify-between border-b border-sidebar-border px-3",
           // Reserve space for the Sheet's absolute-positioned close
           // button at top-right; without this the artifact count badge
           // sits underneath it on mobile.
@@ -76,27 +120,30 @@ function WorkspaceContent({ chatId, inSheet = false }: { chatId: string; inSheet
         <h2 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
           Workspace
         </h2>
-        {!list.isLoading && (
-          <Badge variant="muted" className="rounded-full px-1.5 py-0 text-[10px]">
-            {artifacts.length}
-          </Badge>
-        )}
+        <Badge variant="muted" className="rounded-full px-1.5 py-0 text-[10px]">
+          {artifacts.length}
+        </Badge>
       </header>
-
-      {list.isLoading && <SidebarSkeletons />}
 
       {list.error && (
         <div className="px-3 py-3 text-xs text-destructive">{(list.error as Error).message}</div>
       )}
 
-      {!list.isLoading && !list.error && artifacts.length === 0 && (
+      {/* Loading is treated identically to "no artifacts yet". The
+          desktop sidebar only mounts when count > 0 (so it never
+          actually shows this state), and the mobile sheet trigger is
+          equally gated — meaning if a user gets here it's because the
+          fetch raced into the body briefly. Showing the empty-state
+          copy beats teasing fake skeleton rows for a feature that
+          might not even apply to this chat. */}
+      {!list.error && artifacts.length === 0 && (
         <div className="space-y-1 px-3 py-6 text-center text-xs text-muted-foreground">
           <p className="font-medium text-foreground/70">No artifacts yet</p>
           <p>Charts and reports the agent produces will appear here.</p>
         </div>
       )}
 
-      {!list.isLoading && artifacts.length > 0 && (
+      {artifacts.length > 0 && (
         <ScrollArea className="flex-1">
           <ul className="py-1">
             {artifacts.map((a) => (
@@ -132,31 +179,16 @@ function WorkspaceContent({ chatId, inSheet = false }: { chatId: string; inSheet
 /**
  * Mobile-only entry point: pass this through to the chat header so the
  * user can pop the workspace open from a button. The drawer mounts the
- * same content as the desktop sidebar.
+ * same content as the desktop sidebar; the trigger button itself
+ * advertises the artifact count via a badge (rendered by
+ * `WorkspaceMobileTrigger` in ChatRoom).
  */
 export function WorkspaceSidebarBody({ chatId }: WorkspaceSidebarProps) {
+  const list = useChatArtifacts(chatId);
   return (
     <div className="flex h-full flex-col">
-      <WorkspaceContent chatId={chatId} inSheet />
+      <WorkspaceContent list={list} inSheet />
     </div>
-  );
-}
-
-function SidebarSkeletons() {
-  // Five rows of compact tile skeletons matching the real artifact
-  // tile height (32px-ish row with a 14px glyph + 14px text). Keeping
-  // the exact dimensions means the layout doesn't shift when data
-  // resolves.
-  return (
-    <ul className="py-1" aria-busy="true" aria-label="Loading artifacts">
-      {Array.from({ length: 5 }).map((_, i) => (
-        <li key={i} className="flex items-center gap-2 px-3 py-2">
-          <Skeleton className="h-3.5 w-3.5 rounded-sm" />
-          <Skeleton className="h-3.5 flex-1" style={{ maxWidth: `${65 + ((i * 11) % 25)}%` }} />
-          <Skeleton className="h-3 w-6" />
-        </li>
-      ))}
-    </ul>
   );
 }
 

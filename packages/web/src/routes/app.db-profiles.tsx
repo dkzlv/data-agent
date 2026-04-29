@@ -9,6 +9,7 @@ import { Label } from "~/components/ui/label";
 import { Badge } from "~/components/ui/badge";
 import { Alert, AlertDescription } from "~/components/ui/alert";
 import { ListSkeleton } from "~/components/list-skeleton";
+import { AppMobileNavTrigger, AppPageScroll } from "~/routes/app";
 
 export const Route = createFileRoute("/app/db-profiles")({
   component: DbProfilesRoute,
@@ -24,13 +25,17 @@ function DbProfilesRoute() {
   const [showForm, setShowForm] = useState(false);
 
   return (
+    <AppPageScroll>
     <div className="mx-auto max-w-4xl space-y-6">
       <header className="flex items-center justify-between gap-3">
-        <div>
-          <h1 className="text-2xl font-semibold tracking-tight">Database connections</h1>
-          <p className="mt-1 text-sm text-muted-foreground">
-            Read-only Postgres URLs the agent can query.
-          </p>
+        <div className="flex items-center gap-2">
+          <AppMobileNavTrigger />
+          <div>
+            <h1 className="text-2xl font-semibold tracking-tight">Database connections</h1>
+            <p className="mt-1 text-sm text-muted-foreground">
+              Read-only Postgres URLs the agent can query.
+            </p>
+          </div>
         </div>
         <Button
           size="sm"
@@ -79,6 +84,7 @@ function DbProfilesRoute() {
         </ul>
       )}
     </div>
+    </AppPageScroll>
   );
 }
 
