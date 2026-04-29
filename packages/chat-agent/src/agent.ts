@@ -7,10 +7,11 @@ import { createCodeTool } from "@cloudflare/codemode/ai";
 import type { LanguageModel, ToolSet } from "ai";
 import { createWorkersAI } from "workers-ai-provider";
 import { getDataDb, resetDataDb, type AgentLike, type CachedHandle } from "./data-db";
+import { buildSystemPrompt, type ChatContext } from "./system-prompt";
 import { artifactTools, chartTools } from "./tools/artifact-tools";
 import { dbTools } from "./tools/db-tools";
 import { vegaLiteTools } from "./tools/vega-lite-tools";
-import type { Env } from "./env";
+import { readSecret, type Env } from "./env";
 
 /**
  * Default model — Kimi K2.6 on Workers AI. 1T params, 262k context,
@@ -26,26 +27,6 @@ import type { Env } from "./env";
  */
 const DEFAULT_MODEL = "@cf/moonshotai/kimi-k2.6";
 const DEFAULT_REASONING_EFFORT: "low" | "medium" | "high" = "medium";
-
-const SYSTEM_PROMPT = `You are a data analyst inside a chat. The user has a workspace with files you can read/write, and a Postgres database accessible via tools.
-
-You have ONE tool: \`codemode\`. To do anything, write a small async TypeScript arrow function that uses the available APIs and returns the result.
-
-Available APIs inside codemode:
-- \`db.introspect()\` — schema snapshot (tables, columns, FKs, est. rows). Always call this first if you don't know the schema.
-- \`db.query(sql, params?)\` — read-only SELECT/WITH/EXPLAIN. Use \`$1\`, \`$2\` placeholders; never interpolate values into the SQL string. Results are auto-capped at 5000 rows / 4 MB / 15 s.
-- \`state.*\` — workspace filesystem (readFile, writeFile, readDir, mkdir, exists, …) for caching analysis between turns.
-- \`artifact.save(name, content, mime?)\` / \`artifact.read(name)\` / \`artifact.list()\` — durable named outputs (markdown summaries, csv exports, etc).
-- \`chart.bar / .line / .scatter / .histogram / .spec\` — produce a Vega-Lite chart artifact. Prefer the typed helpers; only use \`chart.spec({ spec })\` for layouts the helpers can't express.
-- \`vegaLite.validate(spec)\` / \`.schemaUrl()\` / \`.exampleBar()\` etc. — for hand-rolling specs.
-
-Workflow:
-- Think briefly, then write code that does the work.
-- For data questions, START with db.introspect() if you don't already know the schema.
-- Show the SQL you ran and a concise summary of findings (numbers + interpretation).
-- Be concise.
-
-Refuse to do anything outside the data-analysis scope.`;
 
 /**
  * ChatAgent — extends `Think`, the AI-chat-aware Agent base.
@@ -126,8 +107,78 @@ export class ChatAgent extends Think<Env> {
   }
 
   override getSystemPrompt(): string {
-    return SYSTEM_PROMPT;
+    // Synchronous fallback used by Think when beforeTurn doesn't override.
+    return buildSystemPrompt(this._cachedChatContext);
   }
+
+  /**
+   * Per-turn hook: lazy-resolve chat context (title + database) from the
+   * control-plane on the first turn, cache for subsequent ones, and
+   * inject it into the system prompt. Falls back gracefully if the
+   * control-plane is unreachable — we never block a turn on prompt
+   * decoration.
+   */
+  override async beforeTurn(): Promise<void | { system: string }> {
+    if (!this._cachedChatContext) {
+      try {
+        this._cachedChatContext = await this.resolveChatContext();
+      } catch (err) {
+        console.warn("beforeTurn: chat context resolve failed", {
+          chatId: this.name,
+          err: (err as Error).message,
+        });
+      }
+    }
+    return { system: buildSystemPrompt(this._cachedChatContext) };
+  }
+
+  /**
+   * Read chat title + (optional) attached dbProfile metadata from the
+   * control-plane. We do NOT include user identity here — multi-user
+   * chats have several users, and the prompt is shared. The user's name
+   * lands as a per-turn message metadata block in the future.
+   */
+  private async resolveChatContext(): Promise<ChatContext> {
+    const { createDbClient, schema } = await import("@data-agent/db");
+    const { eq } = await import("drizzle-orm");
+    const url = await readSecret(this.env.CONTROL_PLANE_DB_URL);
+    const { db, client } = createDbClient({ url, max: 2 });
+    try {
+      const [chat] = await db
+        .select({
+          title: schema.chat.title,
+          dbProfileId: schema.chat.dbProfileId,
+        })
+        .from(schema.chat)
+        .where(eq(schema.chat.id, this.name))
+        .limit(1);
+
+      const ctx: ChatContext = { chatTitle: chat?.title };
+      if (chat?.dbProfileId) {
+        const [profile] = await db
+          .select({
+            name: schema.dbProfile.name,
+            host: schema.dbProfile.host,
+            database: schema.dbProfile.database,
+          })
+          .from(schema.dbProfile)
+          .where(eq(schema.dbProfile.id, chat.dbProfileId))
+          .limit(1);
+        if (profile) ctx.database = profile;
+      }
+      return ctx;
+    } finally {
+      void client.end({ timeout: 1 }).catch(() => {});
+    }
+  }
+
+  /**
+   * Cache for per-chat context (chat title, dbProfile name) so we don't
+   * round-trip to the control-plane on every turn. Refresh via
+   * `setChatContext()` (called by the api-gateway when the chat is
+   * opened or its dbProfile changes).
+   */
+  private _cachedChatContext?: ChatContext;
 
   override getTools(): ToolSet {
     const executor = new DynamicWorkerExecutor({
@@ -243,6 +294,23 @@ export class ChatAgent extends Think<Env> {
   @callable()
   async dataDbReset(): Promise<{ ok: true }> {
     await resetDataDb(this._dataDbHost);
+    // Bust the chat context cache too, in case the user swapped dbProfile.
+    this._cachedChatContext = undefined;
+    return { ok: true };
+  }
+
+  /**
+   * Set the chat context (title, attached database, current user) so the
+   * system prompt can render an accurate per-chat header. Called by the
+   * api-gateway right after a turn is initiated, before the model runs.
+   *
+   * Keeping this as an explicit RPC (rather than re-querying control-plane
+   * on every turn from inside the DO) avoids a Postgres round-trip per
+   * turn — the gateway already has this info from session validation.
+   */
+  @callable()
+  async setChatContext(ctx: ChatContext): Promise<{ ok: true }> {
+    this._cachedChatContext = ctx;
     return { ok: true };
   }
 
