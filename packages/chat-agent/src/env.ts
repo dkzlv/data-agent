@@ -7,6 +7,8 @@ export interface Env {
   // Vars
   APP_URL: string;
   API_URL: string;
+  /** Optional override for the LLM. Set in wrangler vars or .dev.vars. */
+  CHAT_MODEL?: string;
 
   // Secrets
   CONTROL_PLANE_DB_URL: SecretBinding;

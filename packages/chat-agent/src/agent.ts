@@ -15,8 +15,17 @@ import type { Env } from "./env";
 /**
  * Default model — Kimi K2.6 on Workers AI. 1T params, 262k context,
  * function calling + reasoning. Pricing: $0.95/M in, $4/M out.
+ *
+ * Set `CHAT_MODEL` in vars to override (e.g. for A/B). Recognized values:
+ *  - `@cf/moonshotai/kimi-k2.6` (default)
+ *  - `@cf/zai-org/glm-4.7-flash` (faster, cheaper, smaller context)
+ *  - `@cf/openai/gpt-oss-120b`  (reasoning-capable, ~120B)
+ *
+ * `reasoning_effort` is forwarded to the Workers AI binding as a
+ * passthrough; it has no effect on models that don't support reasoning.
  */
 const DEFAULT_MODEL = "@cf/moonshotai/kimi-k2.6";
+const DEFAULT_REASONING_EFFORT: "low" | "medium" | "high" = "medium";
 
 const SYSTEM_PROMPT = `You are a data analyst inside a chat. The user has a workspace with files you can read/write, and a Postgres database accessible via tools.
 
@@ -98,8 +107,22 @@ export class ChatAgent extends Think<Env> {
   }
 
   override getModel(): LanguageModel {
+    const modelId = (this.env.CHAT_MODEL ?? DEFAULT_MODEL) as
+      | "@cf/moonshotai/kimi-k2.6"
+      | "@cf/zai-org/glm-4.7-flash"
+      | "@cf/openai/gpt-oss-120b";
     const workersai = createWorkersAI({ binding: this.env.AI });
-    return workersai(DEFAULT_MODEL);
+    // sessionAffinity uses the DO id (globally unique, stable for the
+    // lifetime of this chat) so all turns from this chat hit the same
+    // replica — improves Workers AI KV-prefix-cache hit rate.
+    return workersai(modelId, {
+      sessionAffinity: this.sessionAffinity,
+      reasoning_effort: DEFAULT_REASONING_EFFORT,
+      chat_template_kwargs: {
+        enable_thinking: true,
+        clear_thinking: false,
+      },
+    });
   }
 
   override getSystemPrompt(): string {
