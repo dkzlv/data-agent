@@ -19,6 +19,16 @@
 export interface ChatContext {
   /** Optional friendly chat title (defaults to "Untitled chat"). */
   chatTitle?: string;
+  /**
+   * Tenant id that owns the chat. Stamped here (rather than only on
+   * connections) so audit hooks fired from message-driven contexts —
+   * which lack a Connection — can still attribute writes to the right
+   * tenant. Resolved lazily from the control-plane DB on the first
+   * turn.
+   */
+  tenantId?: string;
+  /** dbProfile id (if any) — useful for audit cross-referencing. */
+  dbProfileId?: string | null;
   /** Database profile attached to the chat (if any). */
   database?: {
     name: string;

@@ -1,11 +1,13 @@
 import { callable, type Connection, type ConnectionContext } from "agents";
-import { Think } from "@cloudflare/think";
+import { Think, type ChatResponseResult, type ToolCallResultContext } from "@cloudflare/think";
 import { Workspace } from "@cloudflare/shell";
 import { stateTools } from "@cloudflare/shell/workers";
 import { DynamicWorkerExecutor } from "@cloudflare/codemode";
 import { createCodeTool } from "@cloudflare/codemode/ai";
 import type { LanguageModel, ToolSet } from "ai";
 import { createWorkersAI } from "workers-ai-provider";
+import { hashSql, safePayload } from "@data-agent/shared";
+import { auditFromAgent } from "./audit";
 import { getDataDb, resetDataDb, type AgentLike, type CachedHandle } from "./data-db";
 import { buildSystemPrompt, type ChatContext } from "./system-prompt";
 import { artifactTools, chartTools } from "./tools/artifact-tools";
@@ -129,7 +131,125 @@ export class ChatAgent extends Think<Env> {
         });
       }
     }
+
+    // Audit (1dd311) — record turn.start. Best-effort, never blocks.
+    const tenantId = this._cachedChatContext?.tenantId;
+    if (tenantId) {
+      this.ctx.waitUntil(
+        auditFromAgent(this.env, {
+          tenantId,
+          chatId: this.name,
+          userId: this._currentTurnUserId ?? null,
+          action: "turn.start",
+          target: this.name,
+          payload: { dbProfileId: this._cachedChatContext?.dbProfileId ?? null },
+        })
+      );
+    }
+
     return { system: buildSystemPrompt(this._cachedChatContext) };
+  }
+
+  /**
+   * Audit hook (1dd311) — fired by Think after the model finishes a
+   * turn. We log token usage so cost-telemetry (subtask 5bcb5f) has a
+   * source of truth. Best-effort.
+   */
+  override async onChatResponse(result: ChatResponseResult): Promise<void> {
+    const tenantId = this._cachedChatContext?.tenantId;
+    if (!tenantId) return;
+    // Pull whatever usage info Think exposes — shape varies between
+    // providers, so just persist the whole `usage` object as-is.
+    const usage = (result as unknown as { usage?: unknown }).usage ?? null;
+    this.ctx.waitUntil(
+      auditFromAgent(this.env, {
+        tenantId,
+        chatId: this.name,
+        userId: this._currentTurnUserId ?? null,
+        action: "turn.complete",
+        target: this.name,
+        payload: { usage },
+      })
+    );
+  }
+
+  /** Audit hook (1dd311) — turn errored. */
+  override onChatError(error: unknown): unknown {
+    const tenantId = this._cachedChatContext?.tenantId;
+    if (tenantId) {
+      this.ctx.waitUntil(
+        auditFromAgent(this.env, {
+          tenantId,
+          chatId: this.name,
+          userId: this._currentTurnUserId ?? null,
+          action: "turn.error",
+          target: this.name,
+          payload: { error: String((error as Error)?.message ?? error).slice(0, 500) },
+        })
+      );
+    }
+    return error;
+  }
+
+  /** Tracks the user driving the current turn for audit attribution. */
+  private _currentTurnUserId: string | null = null;
+
+  /**
+   * Audit hook (1dd311) — fires after every tool call (success or
+   * failure). We only persist a row for security-relevant tools and
+   * include just enough payload to be useful in an audit trail
+   * without leaking data.
+   */
+  override async afterToolCall(ctx: ToolCallResultContext): Promise<void> {
+    const tenantId = this._cachedChatContext?.tenantId;
+    if (!tenantId) return;
+
+    const name = ctx.toolName;
+    // Only audit a curated set: data access + persistence. Sandbox
+    // execution itself isn't a separate audit event — `turn.complete`
+    // already captures that the turn ran.
+    const isAuditable =
+      name === "db_query" ||
+      name === "db_introspect" ||
+      name.startsWith("artifact_write") ||
+      name === "chart_save";
+    if (!isAuditable) return;
+
+    let payload: Record<string, unknown> | null = null;
+    try {
+      if (name === "db_query") {
+        const input = ctx.input as { sql?: string; params?: unknown[] };
+        const output = ctx.output as { rows?: unknown[]; truncated?: boolean } | undefined;
+        const sqlHash = input?.sql ? await hashSql(input.sql) : null;
+        payload = {
+          sqlHash,
+          paramsCount: Array.isArray(input?.params) ? input!.params!.length : 0,
+          rowCount: Array.isArray(output?.rows) ? output!.rows!.length : null,
+          truncated: output?.truncated ?? null,
+          success: ctx.success,
+          durationMs: ctx.durationMs,
+        };
+      } else {
+        payload = {
+          success: ctx.success,
+          durationMs: ctx.durationMs,
+          input: safePayload(ctx.input as Record<string, unknown>, 800),
+        };
+      }
+    } catch {
+      payload = { success: ctx.success };
+    }
+
+    this.ctx.waitUntil(
+      auditFromAgent(this.env, {
+        tenantId,
+        chatId: this.name,
+        userId: this._currentTurnUserId ?? null,
+        action: name === "db_query" ? "db.query" : `tool.${name}`,
+        target: ctx.toolCallId,
+        payload,
+      })
+    );
   }
 
   /**
@@ -147,13 +267,18 @@ export class ChatAgent extends Think<Env> {
       const [chat] = await db
         .select({
           title: schema.chat.title,
+          tenantId: schema.chat.tenantId,
           dbProfileId: schema.chat.dbProfileId,
         })
         .from(schema.chat)
         .where(eq(schema.chat.id, this.name))
         .limit(1);
 
-      const ctx: ChatContext = { chatTitle: chat?.title };
+      const ctx: ChatContext = {
+        chatTitle: chat?.title,
+        tenantId: chat?.tenantId,
+        dbProfileId: chat?.dbProfileId ?? null,
+      };
       if (chat?.dbProfileId) {
         const [profile] = await db
           .select({
@@ -231,6 +356,24 @@ export class ChatAgent extends Think<Env> {
     // Connection is already removed from `getConnections()` by the time
     // onClose runs, so the broadcast naturally reflects the new state.
     this.broadcastPresence();
+  }
+
+  /**
+   * Audit attribution (1dd311) — stamp the user id of whichever
+   * connection drove the most recent message onto the agent. Think's
+   * turn pipeline reads `_currentTurnUserId` in `beforeTurn` /
+   * `onChatResponse` / `onChatError` and writes it into the audit row.
+   *
+   * For single-user chats this is exact. For multi-user chats it's
+   * "the user who sent the message", which is what we want — even if
+   * a different user happened to have a connection open at the same
+   * moment.
+   */
+  override async onMessage(connection: Connection, message: string | ArrayBuffer): Promise<void> {
+    type PresenceState = { userId?: string };
+    const userId = (connection.state as PresenceState | undefined)?.userId;
+    if (userId) this._currentTurnUserId = userId;
+    await super.onMessage(connection, message);
   }
 
   private broadcastPresence(): void {

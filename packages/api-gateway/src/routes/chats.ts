@@ -2,6 +2,7 @@ import { and, desc, eq, isNull, sql } from "drizzle-orm";
 import { Hono } from "hono";
 import { z } from "zod";
 import { schema } from "@data-agent/db";
+import { writeAudit } from "../audit";
 import type { Env } from "../env";
 import { requireSession, type RequestSession } from "../session";
 
@@ -93,14 +94,16 @@ chatsRouter.post("/", async (c) => {
     role: "owner",
   });
 
-  await db.insert(schema.auditLog).values({
-    tenantId,
-    userId: user.id,
-    chatId: id,
-    action: "chat.create",
-    target: id,
-    payload: { title: body.title, dbProfileId: body.dbProfileId ?? null },
-  });
+  c.executionCtx.waitUntil(
+    writeAudit(db, {
+      tenantId,
+      userId: user.id,
+      chatId: id,
+      action: "chat.create",
+      target: id,
+      payload: { title: body.title, dbProfileId: body.dbProfileId ?? null },
+    })
+  );
 
   return c.json({ chat }, 201);
 });
@@ -176,14 +179,16 @@ chatsRouter.patch("/:id", async (c) => {
     .returning();
   if (!updated) return c.json({ error: "not_found" }, 404);
 
-  await db.insert(schema.auditLog).values({
-    tenantId,
-    userId: user.id,
-    chatId: id,
-    action: body.archive === true ? "chat.archive" : "chat.update",
-    target: id,
-    payload: { changes: body },
-  });
+  c.executionCtx.waitUntil(
+    writeAudit(db, {
+      tenantId,
+      userId: user.id,
+      chatId: id,
+      action: body.archive === true ? "chat.archive" : "chat.update",
+      target: id,
+      payload: { changes: body },
+    })
+  );
 
   return c.json({ chat: updated });
 });
@@ -216,14 +221,16 @@ chatsRouter.post("/:id/members", async (c) => {
     .values({ chatId: id, userId: body.userId, role: body.role })
     .onConflictDoNothing();
 
-  await db.insert(schema.auditLog).values({
-    tenantId,
-    userId: user.id,
-    chatId: id,
-    action: "chat.member_add",
-    target: body.userId,
-    payload: { role: body.role },
-  });
+  c.executionCtx.waitUntil(
+    writeAudit(db, {
+      tenantId,
+      userId: user.id,
+      chatId: id,
+      action: "chat.member.add",
+      target: body.userId,
+      payload: { role: body.role },
+    })
+  );
 
   return c.json({ ok: true });
 });
@@ -248,13 +255,15 @@ chatsRouter.delete("/:id/members/:userId", async (c) => {
     .delete(schema.chatMember)
     .where(and(eq(schema.chatMember.chatId, id), eq(schema.chatMember.userId, targetUserId)));
 
-  await db.insert(schema.auditLog).values({
-    tenantId,
-    userId: user.id,
-    chatId: id,
-    action: "chat.member_remove",
-    target: targetUserId,
-  });
+  c.executionCtx.waitUntil(
+    writeAudit(db, {
+      tenantId,
+      userId: user.id,
+      chatId: id,
+      action: "chat.member.remove",
+      target: targetUserId,
+    })
+  );
 
   return c.json({ ok: true });
 });

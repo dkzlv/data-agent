@@ -261,7 +261,7 @@ The spike is the most important task. Save energy for it; do not skimp. After th
 - [ ] 46391e Multi-user: presence + turn-lock
 - [ ] dea3ff Multi-user product semantics
 - [x] 2173ac Sandbox hardening
-- [ ] 1dd311 Audit logging
+- [x] 1dd311 Audit logging
 - [ ] 947c38 Rate limiting
 - [ ] 5bcb5f Cost telemetry
 - [ ] 2f89ff Error UX

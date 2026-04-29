@@ -19,6 +19,7 @@ import { and, eq } from "drizzle-orm";
 import { Hono } from "hono";
 import { mintChatToken } from "@data-agent/shared";
 import { schema } from "@data-agent/db";
+import { writeAudit } from "../audit";
 import { readSecret, type Env } from "../env";
 import { requireSession, type RequestSession } from "../session";
 
@@ -89,6 +90,19 @@ wsRouter.get("/chats/:id/ws", requireSession(), async (c) => {
     // complaining about un-passable streams.
     body: null,
   });
+
+  // Best-effort audit — never block the upgrade. We log only the
+  // *intent to connect*; the chat-agent itself logs join/leave events
+  // for presence in its own DO storage (not control-plane audit).
+  c.executionCtx.waitUntil(
+    writeAudit(db, {
+      tenantId,
+      userId: user.id,
+      chatId,
+      action: "chat.ws.connect",
+      target: chatId,
+    })
+  );
 
   return c.env.CHAT_AGENT.fetch(fwdReq);
 });
@@ -177,5 +191,16 @@ wsRouter.get("/chats/:id/artifacts/:artifactId", requireSession(), async (c) => 
     headers: fwdHeaders,
     body: null,
   });
+
+  c.executionCtx.waitUntil(
+    writeAudit(db, {
+      tenantId,
+      userId: user.id,
+      chatId,
+      action: "artifact.read",
+      target: artifactId,
+    })
+  );
+
   return c.env.CHAT_AGENT.fetch(fwdReq);
 });

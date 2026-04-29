@@ -2,6 +2,7 @@ import { Hono } from "hono";
 import { cors } from "hono/cors";
 import { logger } from "hono/logger";
 import { createAuth } from "./auth";
+import { auditRouter } from "./routes/audit";
 import { chatsRouter } from "./routes/chats";
 import { dbProfilesRouter } from "./routes/db-profiles";
 import { wsRouter } from "./routes/ws";
@@ -51,6 +52,7 @@ api.route("/", wsRouter);
 
 api.route("/chats", chatsRouter);
 api.route("/db-profiles", dbProfilesRouter);
+api.route("/audit", auditRouter);
 
 app.route("/api", api);
 

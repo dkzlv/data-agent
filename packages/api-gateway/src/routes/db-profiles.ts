@@ -4,6 +4,7 @@ import postgres from "postgres";
 import { z } from "zod";
 import { schema } from "@data-agent/db";
 import { encryptCredentials } from "@data-agent/shared";
+import { writeAudit } from "../audit";
 import { readSecret, type Env } from "../env";
 import { requireSession, type RequestSession } from "../session";
 
@@ -139,21 +140,23 @@ dbProfilesRouter.post("/", async (c) => {
       createdAt: schema.dbProfile.createdAt,
     });
 
-  // 3. Audit
-  await db.insert(schema.auditLog).values({
-    tenantId,
-    userId: user.id,
-    action: "db_profile.create",
-    target: id,
-    payload: { name: body.name, host: body.host, database: body.database },
-  });
+  // 3. Audit (host + db + name only — never user/password)
+  c.executionCtx.waitUntil(
+    writeAudit(db, {
+      tenantId,
+      userId: user.id,
+      action: "db_profile.create",
+      target: id,
+      payload: { name: body.name, host: body.host, database: body.database },
+    })
+  );
 
   return c.json({ profile: inserted }, 201);
 });
 
 // Re-test
 dbProfilesRouter.post("/:id/test", async (c) => {
-  const { tenantId, db } = c.var.session;
+  const { tenantId, user, db } = c.var.session;
   const id = c.req.param("id");
 
   const [row] = await db
@@ -204,6 +207,16 @@ dbProfilesRouter.post("/:id/test", async (c) => {
     })
     .where(eq(schema.dbProfile.id, id));
 
+  c.executionCtx.waitUntil(
+    writeAudit(db, {
+      tenantId,
+      userId: user.id,
+      action: "db_profile.test",
+      target: id,
+      payload: { ok: test.ok, error: test.ok ? null : test.error.slice(0, 200) },
+    })
+  );
+
   return c.json({ ok: test.ok, error: test.ok ? null : test.error });
 });
 
@@ -226,12 +239,14 @@ dbProfilesRouter.delete("/:id", async (c) => {
 
   if (result.length === 0) return c.json({ error: "not_found" }, 404);
 
-  await db.insert(schema.auditLog).values({
-    tenantId,
-    userId: user.id,
-    action: "db_profile.delete",
-    target: id,
-  });
+  c.executionCtx.waitUntil(
+    writeAudit(db, {
+      tenantId,
+      userId: user.id,
+      action: "db_profile.delete",
+      target: id,
+    })
+  );
 
   return c.json({ ok: true });
 });
