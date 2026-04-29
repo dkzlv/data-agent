@@ -531,9 +531,19 @@ project. Don't undo without reading the relevant context.
    waitUntil. Hono runs middleware sequentially; closing the
    Drizzle connection synchronously kills mid-flight queries from
    the next handler.
-10. **Cookies on `*.workers.dev`.** SameSite=None + Secure +
-    httpOnly. Switches to Lax + Domain=.dkzlv.com once
-    `COOKIE_DOMAIN` starts with a dot.
+10. **Single-origin web + api on `data-agent.dkzlv.com`.** Web
+    Worker owns the Custom Domain; api-gateway is a Route at
+    `/api/*` + `/healthz` on the same hostname (CF Routes take
+    precedence over Custom Domains for matching paths). Cookie is
+    host-only + SameSite=Lax + Secure + httpOnly — no `Domain`
+    attribute. Earlier alpha mounted api-gateway at
+    `api.data-agent.dkzlv.com` with `Domain=.data-agent.dkzlv.com`
+    on the cookie. Brave Shields' ephemeral-storage partitioning
+    treated the apex↔subdomain hop as cross-site and dropped the
+    cookie on cross-tab navigation, surfacing as a Chromium
+    `ERR_BLOCKED_BY_RESPONSE` "HTTP ERROR 403" net-error page on
+    `/app`. Same-origin removes the cross-site surface entirely
+    (no CORS, no preflights, no partitioning).
 11. **Codemode wraps tool returns in `{code, result: ...}`.**
     Web client's `asArtifactRef` peeks at `value.result` so
     chart artifacts render inline.

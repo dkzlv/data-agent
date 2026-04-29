@@ -12,7 +12,6 @@ export interface Env {
   // Vars
   APP_URL: string;
   API_URL: string;
-  COOKIE_DOMAIN: string;
   CF_ACCOUNT_ID: string;
   /**
    * Comma-separated list of email-domain suffixes (no `@`) allowed

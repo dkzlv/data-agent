@@ -43,18 +43,24 @@ export async function createAuth(env: Env, ctx: ExecutionContext) {
     trustedOrigins: [env.APP_URL],
     advanced: {
       defaultCookieAttributes: {
-        // The web app and api-gateway live on different hosts during
-        // alpha (different *.workers.dev subdomains). Cross-origin
-        // cookie sharing requires SameSite=None + Secure. When we move
-        // both to subdomains of data-agent.dkzlv.com (same registrable
-        // domain), we'll downgrade to "lax" and set `domain: ".dkzlv.com"`.
-        sameSite: env.COOKIE_DOMAIN.startsWith(".") ? "lax" : "none",
+        // Single-origin deployment (web + api-gateway both on
+        // `data-agent.dkzlv.com`): the auth cookie can be host-only
+        // and SameSite=Lax — the simplest, most-private setting.
+        // No `domain` attribute means the cookie is scoped to the
+        // exact host that set it (the gateway), and since web hits
+        // the gateway via same-origin `/api/*` requests, the
+        // browser sends it without any cross-site quirks.
+        //
+        // Earlier alpha used `Domain=.data-agent.dkzlv.com` to share
+        // the cookie across the apex + `api.` subdomain, but Brave
+        // Shields' ephemeral-storage partitioning treated the apex
+        // ↔ subdomain hop as cross-site and silently dropped the
+        // cookie on second-tab navigations, surfacing as a Chromium
+        // `ERR_BLOCKED_BY_RESPONSE` "HTTP ERROR 403" net error page.
+        // See decision #10 in AGENTS.md.
+        sameSite: "lax",
         secure: env.API_URL.startsWith("https://"),
         httpOnly: true,
-        // Only set explicit Domain when COOKIE_DOMAIN is a leading-dot
-        // value (registrable domain). Otherwise leave the cookie
-        // host-only on the api-gateway origin.
-        domain: env.COOKIE_DOMAIN.startsWith(".") ? env.COOKIE_DOMAIN : undefined,
       },
     },
     database: drizzleAdapter(db, {

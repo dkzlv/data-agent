@@ -17,17 +17,21 @@
     "cpu_ms": 300000
   },
 
-  // Both web and gateway live under `*.data-agent.dkzlv.com` so the
-  // auth cookie is first-party to both. The leading-dot COOKIE_DOMAIN
-  // tells `auth.ts` to emit Lax + Domain=.data-agent.dkzlv.com, which
-  // (a) sidesteps third-party-cookie blocking that bit us when web
-  // moved to dkzlv.com while gateway stayed on workers.dev, and (b)
-  // keeps the cookie scoped to this app rather than the whole
-  // dkzlv.com zone. See decision #10 in AGENTS.md.
+  // Single-origin deployment: web is the Custom Domain owner of
+  // `data-agent.dkzlv.com` and api-gateway is registered as a Route
+  // at `/api/*` + `/healthz` on the same hostname. CF routes are
+  // more specific than custom domains and win the dispatch — so
+  // `/api/auth/...` lands here and everything else falls through to
+  // the web Worker. Earlier alpha used `api.data-agent.dkzlv.com`
+  // (subdomain) which Brave Shields' ephemeral-storage partitioning
+  // treated as cross-site even with `Domain=.data-agent.dkzlv.com`
+  // on the cookie, producing intermittent `ERR_BLOCKED_BY_RESPONSE`
+  // 403 net-error pages on `/app` after sign-in. Same-origin makes
+  // the cookie host-only + SameSite=Lax and removes the cross-origin
+  // surface entirely (no CORS, no preflights). See decision #10.
   "vars": {
     "APP_URL": "https://data-agent.dkzlv.com",
-    "API_URL": "https://api.data-agent.dkzlv.com",
-    "COOKIE_DOMAIN": ".data-agent.dkzlv.com",
+    "API_URL": "https://data-agent.dkzlv.com",
     "CF_ACCOUNT_ID": "2f7029a7ef2671db090d9304f595c42d",
     // Closed-alpha allow-list for magic-link signups. Comma-separated
     // domain suffixes (no `@`). Set to `*` to disable the gate.
@@ -88,5 +92,13 @@
     }
   ],
 
-  "routes": [{ "pattern": "api.data-agent.dkzlv.com", "custom_domain": true }]
+  // Path-pattern routes on the apex `data-agent.dkzlv.com` — these
+  // win over the web Worker's Custom Domain on this hostname for
+  // matching paths. `/api/*` covers the entire JSON+WS surface and
+  // `/healthz` is the gateway's own liveness endpoint (web has no
+  // such path). Everything else falls through to the web Worker.
+  "routes": [
+    { "pattern": "data-agent.dkzlv.com/api/*", "zone_name": "dkzlv.com" },
+    { "pattern": "data-agent.dkzlv.com/healthz", "zone_name": "dkzlv.com" }
+  ]
 }

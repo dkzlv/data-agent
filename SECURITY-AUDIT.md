@@ -135,25 +135,22 @@ rejected. Tracked for post-alpha. Until then the claim rests on:
    driving a `db.query` with `INSERT` in the body — the keyword
    regex catches it before SQL even runs).
 
-### P2-2 · Cookie SameSite + Secure depends on environment
+### P2-2 · Cookie SameSite + Secure (resolved on consolidation) [FIXED]
 
-`packages/api-gateway/src/auth.ts` configures Better Auth cookies
-based on `COOKIE_DOMAIN`:
+History: `packages/api-gateway/src/auth.ts` originally toggled
+SameSite/Domain based on a `COOKIE_DOMAIN` env var (None+Secure on
+`*.workers.dev`, Lax+`Domain=.dkzlv.com` on the apex+`api.` subdomain
+deployment). Both modes were correct but the env-driven switch could
+flip silently if the var was set wrong.
 
-- `*.workers.dev` (alpha) → `SameSite=None; Secure`
-- A dotted custom domain (later) → `SameSite=Lax; Domain=.dkzlv.com`
-
-Both modes are correct, but the switch is environment-driven, which
-means a wrong env var flips us to the wrong mode silently. Two
-mitigations:
-
-1. The check `secure: env.API_URL.startsWith("https://")` ensures we
-   never *downgrade* to insecure cookies in prod by accident.
-2. The cookie domain is part of `Set-Cookie`; a misconfigured
-   domain would surface as "user can't sign in" — fail-loud not
-   silent-leak.
-
-No fix needed for alpha. Document for post-alpha rotation.
+When we collapsed web + api-gateway onto a single origin
+(`data-agent.dkzlv.com` with api as a Route at `/api/*`, decision
+#10 in AGENTS.md), the cookie became host-only + `SameSite=Lax` +
+`Secure` + `httpOnly` unconditionally. There's no longer an
+environment switch to get wrong, and the cookie is never sent
+cross-site by definition. The `secure` flag is still gated on
+`API_URL.startsWith("https://")` so dev (http) gets a non-Secure
+cookie.
 
 ### P2-3 · `messageConcurrency: "queue"` relies on Think default
 

@@ -1,8 +1,9 @@
 /**
  * Resolve the WebSocket host for the api-gateway from the runtime env.
  * `useAgent` accepts `host` as a bare host (no protocol). In production
- * this is `api.data-agent.dkzlv.com`; in dev it's the api-gateway's
- * wrangler dev port.
+ * this is `data-agent.dkzlv.com` (same origin as the web app — the
+ * api-gateway is mounted as a Route at `/api/*` on the same hostname);
+ * in dev it's the api-gateway's wrangler dev port.
  *
  * The api-gateway proxies WS upgrades to the chat-agent service binding
  * via `/api/chats/:chatId/ws`, validating the user's better-auth cookie

@@ -68,29 +68,28 @@ app.use("*", async (c, next) => {
 });
 
 app.use("/api/*", async (c, next) => {
-  // Closed-list CORS (subtask c87874 finding).
-  //
-  // Earlier code reflected the request's `Origin` header back as
-  // `Access-Control-Allow-Origin` with `credentials: true` — that
-  // lets any cross-origin attacker include the user's session
-  // cookie in their fetches. Now we only allow:
-  //   - the configured APP_URL (production / alpha)
-  //   - localhost dev hosts (so `pnpm --filter web dev` works)
-  //   - explicit `CORS_EXTRA_ORIGINS` list for staging mirrors
-  //
-  // Anything else falls back to APP_URL, which the browser will
-  // then reject (preventing credential-leaking flows).
+  // Same-origin in production: web + api-gateway share
+  // `data-agent.dkzlv.com`, so production browsers never send a
+  // cross-origin request and CORS is a no-op. We still keep the
+  // middleware for **local dev**, where `pnpm --filter web dev`
+  // runs vite on a different port than the gateway. The closed
+  // allow-list (APP_URL + localhost + optional `CORS_EXTRA_ORIGINS`)
+  // remains — see subtask c87874: reflective+credentialed CORS is a
+  // credential-leak vector.
   const requestOrigin = c.req.header("origin");
+  // No Origin header → same-origin or non-browser client → skip CORS.
+  if (!requestOrigin) {
+    return next();
+  }
   const allowed = new Set<string>([c.env.APP_URL]);
   for (const extra of (c.env.CORS_EXTRA_ORIGINS ?? "").split(",")) {
     const trimmed = extra.trim();
     if (trimmed) allowed.add(trimmed);
   }
   const isLocalhost =
-    requestOrigin?.startsWith("http://localhost:") ||
-    requestOrigin?.startsWith("http://127.0.0.1:");
-  const origin =
-    requestOrigin && (allowed.has(requestOrigin) || isLocalhost) ? requestOrigin : c.env.APP_URL;
+    requestOrigin.startsWith("http://localhost:") ||
+    requestOrigin.startsWith("http://127.0.0.1:");
+  const origin = allowed.has(requestOrigin) || isLocalhost ? requestOrigin : c.env.APP_URL;
   return cors({
     origin,
     credentials: true,

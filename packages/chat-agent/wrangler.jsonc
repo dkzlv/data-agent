@@ -31,7 +31,7 @@
     // but the env types declare them, so keep them in sync with
     // the production hosts.
     "APP_URL": "https://data-agent.dkzlv.com",
-    "API_URL": "https://api.data-agent.dkzlv.com",
+    "API_URL": "https://data-agent.dkzlv.com",
     // Route Workers AI through CF AI Gateway for cost/log/cache (5bcb5f).
     "AI_GATEWAY_ID": "data-agent"
   },

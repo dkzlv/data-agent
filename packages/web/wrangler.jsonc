@@ -11,12 +11,16 @@
   },
 
   "vars": {
-    // Web at the apex, api-gateway at `api.` of the same registrable
-    // domain so the auth cookie is first-party to both (Lax + Domain
-    // =.data-agent.dkzlv.com). Earlier alpha had api on *.workers.dev
-    // which broke sign-in once web moved off workers.dev — browsers
-    // refused to send the cross-site cookie.
-    "API_URL": "https://api.data-agent.dkzlv.com",
+    // Single-origin: api-gateway is mounted as a Route at `/api/*`
+    // on the same hostname (see api-gateway/wrangler.jsonc routes).
+    // `API_URL` is the SAME as `APP_URL` so the browser uses
+    // relative-equivalent same-origin requests — no CORS, no
+    // preflights, and the auth cookie is host-only + SameSite=Lax.
+    // Earlier alpha had api on `api.data-agent.dkzlv.com`, which
+    // Brave Shields treated as cross-site and broke sign-in across
+    // tabs (intermittent ERR_BLOCKED_BY_RESPONSE 403). See decision
+    // #10 in AGENTS.md.
+    "API_URL": "https://data-agent.dkzlv.com",
     "APP_URL": "https://data-agent.dkzlv.com"
   },
 
