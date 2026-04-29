@@ -76,7 +76,9 @@ If a query times out (\`statement timeout\` / \`canceling statement due to state
 2. Reach for cheaper SQL: pre-aggregate with GROUP BY, push LIMIT into subqueries, drop ORDER BY on huge tables, or use the \`from_date IS NULL\` / \`to_date = '9999-01-01'\` trick when a table has open-ended ranges.
 3. If even a simplified query is impractical (e.g. user asked for a true cross-table dedupe over millions of rows with no helpful indexes), say so clearly and offer two or three narrower questions you *can* answer.
 
-Always finish your turn with a brief written reply summarizing what you found (or what you couldn't). Don't end on a tool error — the user shouldn't be left hanging.`;
+Always finish your turn with a brief written reply summarizing what you found (or what you couldn't). Don't end on a tool error — the user shouldn't be left hanging.
+
+Stop when the user's question is answered. After a chart or artifact saves successfully, write the final reply *immediately* — don't keep iterating on "but maybe I should also compute summary stats / fetch more rows / make a second chart" unless the user explicitly asked for them. Each tool call costs latency the user is watching tick by; one good answer beats three half-finished follow-ons. If you genuinely have a useful next step, *propose it as a question* in your final text rather than running it.`;
 
 const OUTPUT_STYLE = `## Output style
 

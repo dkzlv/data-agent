@@ -39,6 +39,21 @@ interface ChatRoomProps {
 
 export function ChatRoom({ chatId, title, members = [] }: ChatRoomProps): React.ReactElement {
   const host = useMemo(() => getChatHost(), []);
+  const basePath = `api/chats/${encodeURIComponent(chatId)}/ws`;
+
+  // Diagnostic: surface the WS target in the browser console so a
+  // debug session can immediately verify which host the agents SDK is
+  // pointing at. The most common breakages are stale SSR cache giving
+  // the wrong API_URL, or basePath being silently ignored.
+  if (typeof window !== "undefined") {
+    // eslint-disable-next-line no-console
+    console.log("[chat-room] WS target", {
+      host,
+      basePath,
+      url: `wss://${host}/${basePath}`,
+      apiEnv: (window as unknown as { __ENV__?: { API_URL?: string } }).__ENV__,
+    });
+  }
 
   const agent = useAgent({
     host,
@@ -48,7 +63,7 @@ export function ChatRoom({ chatId, title, members = [] }: ChatRoomProps): React.
     // URL — we route everything through the api-gateway's authenticated
     // upgrade endpoint, which mints a chat-token JWT and forwards on the
     // service binding.
-    basePath: `api/chats/${encodeURIComponent(chatId)}/ws`,
+    basePath,
   });
 
   // useAgentChat manages the AI SDK message timeline + the WS protocol.
@@ -58,6 +73,28 @@ export function ChatRoom({ chatId, title, members = [] }: ChatRoomProps): React.
     agent,
     credentials: "include",
   });
+
+  // Diagnostic: log every WS lifecycle event so any disconnect /
+  // failure-to-connect shows up immediately in the browser console.
+  // Cheap, only fires on state change.
+  useEffect(() => {
+    const onOpen = () => console.log("[chat-room] WS open");
+    const onClose = (e: CloseEvent) =>
+      console.warn("[chat-room] WS close", {
+        code: e.code,
+        reason: e.reason,
+        wasClean: e.wasClean,
+      });
+    const onError = (e: Event) => console.error("[chat-room] WS error", e);
+    agent.addEventListener("open", onOpen);
+    agent.addEventListener("close", onClose);
+    agent.addEventListener("error", onError);
+    return () => {
+      agent.removeEventListener("open", onOpen);
+      agent.removeEventListener("close", onClose);
+      agent.removeEventListener("error", onError);
+    };
+  }, [agent]);
 
   // Presence: the ChatAgent broadcasts `{ type: 'data_agent_presence',
   // users: [{ userId, joinedAt }] }` whenever the connected set changes.
