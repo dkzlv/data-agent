@@ -203,7 +203,7 @@ export function createAuth(env: Env) {
 - [x] 9c2659 Set up CI (workflow exists; user has deprioritized — not monitoring runs)
 - [x] a636fe Provision Cloudflare account
 - [x] 93f695 Pick + provision control-plane DB
-- [ ] 3c8c0b Scaffold api-gateway Worker
+- [x] 3c8c0b Scaffold api-gateway Worker
 - [ ] 616db2 Scaffold ChatAgent DO
 - [ ] fde638 Scaffold web app
 - [ ] 6c7414 Better Auth in control-plane

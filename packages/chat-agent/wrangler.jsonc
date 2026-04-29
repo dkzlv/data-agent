@@ -1,0 +1,68 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "data-agent-chat-agent",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-04-29",
+  "compatibility_flags": ["nodejs_compat"],
+  "account_id": "2f7029a7ef2671db090d9304f595c42d",
+
+  "observability": {
+    "enabled": true
+  },
+
+  "vars": {
+    "APP_URL": "https://app.data-agent.dkzlv.com",
+    "API_URL": "https://api.data-agent.dkzlv.com"
+  },
+
+  "ai": {
+    "binding": "AI"
+  },
+
+  "worker_loaders": [
+    {
+      "binding": "LOADER"
+    }
+  ],
+
+  "r2_buckets": [
+    {
+      "binding": "ARTIFACTS",
+      "bucket_name": "data-agent-artifacts"
+    }
+  ],
+
+  "secrets_store_secrets": [
+    {
+      "binding": "CONTROL_PLANE_DB_URL",
+      "store_id": "5fca98fdba4f4972b9d14ac74ea58cf4",
+      "secret_name": "CONTROL_PLANE_DB_URL"
+    },
+    {
+      "binding": "INTERNAL_JWT_SIGNING_KEY",
+      "store_id": "5fca98fdba4f4972b9d14ac74ea58cf4",
+      "secret_name": "INTERNAL_JWT_SIGNING_KEY"
+    },
+    {
+      "binding": "MASTER_ENCRYPTION_KEY",
+      "store_id": "5fca98fdba4f4972b9d14ac74ea58cf4",
+      "secret_name": "MASTER_ENCRYPTION_KEY"
+    }
+  ],
+
+  "durable_objects": {
+    "bindings": [
+      {
+        "name": "CHAT_AGENT",
+        "class_name": "ChatAgent"
+      }
+    ]
+  },
+
+  "migrations": [
+    {
+      "tag": "v1",
+      "new_sqlite_classes": ["ChatAgent"]
+    }
+  ]
+}
