@@ -12,9 +12,11 @@
   },
   "dependencies": {
     "@data-agent/db": "workspace:*",
-    "@data-agent/shared": "workspace:*"
+    "@data-agent/shared": "workspace:*",
+    "hono": "^4.12.15"
   },
   "devDependencies": {
+    "@cloudflare/workers-types": "^4.20260426.1",
     "typescript": "^5.9.0",
     "wrangler": "^4.86.0"
   }

@@ -1,0 +1,60 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "data-agent-api-gateway",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-04-29",
+  "compatibility_flags": ["nodejs_compat"],
+  "account_id": "2f7029a7ef2671db090d9304f595c42d",
+
+  "observability": {
+    "enabled": true
+  },
+
+  "vars": {
+    "APP_URL": "https://app.data-agent.dkzlv.com",
+    "API_URL": "https://api.data-agent.dkzlv.com",
+    "COOKIE_DOMAIN": ".dkzlv.com"
+  },
+
+  "secrets_store_secrets": [
+    {
+      "binding": "CONTROL_PLANE_DB_URL",
+      "store_id": "5fca98fdba4f4972b9d14ac74ea58cf4",
+      "secret_name": "CONTROL_PLANE_DB_URL"
+    },
+    {
+      "binding": "BETTER_AUTH_SECRET",
+      "store_id": "5fca98fdba4f4972b9d14ac74ea58cf4",
+      "secret_name": "BETTER_AUTH_SECRET"
+    },
+    {
+      "binding": "INTERNAL_JWT_SIGNING_KEY",
+      "store_id": "5fca98fdba4f4972b9d14ac74ea58cf4",
+      "secret_name": "INTERNAL_JWT_SIGNING_KEY"
+    },
+    {
+      "binding": "MASTER_ENCRYPTION_KEY",
+      "store_id": "5fca98fdba4f4972b9d14ac74ea58cf4",
+      "secret_name": "MASTER_ENCRYPTION_KEY"
+    }
+  ],
+
+  "r2_buckets": [
+    {
+      "binding": "ARTIFACTS",
+      "bucket_name": "data-agent-artifacts"
+    }
+  ],
+
+  "services": [
+    {
+      "binding": "CHAT_AGENT",
+      "service": "data-agent-chat-agent",
+      "entrypoint": "ChatAgent"
+    }
+  ]
+
+  // Routes wired at deploy time:
+  //   "routes": [{ "pattern": "api.data-agent.dkzlv.com/*", "custom_domain": true }]
+  // — left out of jsonc until first deploy so dev keeps using *.workers.dev
+}
