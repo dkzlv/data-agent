@@ -176,9 +176,7 @@ export interface RateLimitDriverInputs {
   waitUntil: (p: Promise<unknown>) => void;
 }
 
-export async function runRateLimitCheck(
-  inputs: RateLimitDriverInputs
-): Promise<RateLimitDecision> {
+export async function runRateLimitCheck(inputs: RateLimitDriverInputs): Promise<RateLimitDecision> {
   const { createDbClient } = await import("@data-agent/db");
   // Local import to avoid a top-level dependency on env.ts (the
   // module is otherwise pure-policy + Database-typed).

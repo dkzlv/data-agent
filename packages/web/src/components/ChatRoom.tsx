@@ -39,6 +39,8 @@ import {
 } from "lucide-react";
 import { ArtifactViewer, asArtifactRef } from "./ArtifactViewer";
 import { CodeBlock } from "./CodeBlock";
+import { MemoryChip, type WrittenFactSummary } from "./MemoryChip";
+import { MemoryRecalledStrip, type RecalledFactSummary } from "./MemoryRecalledStrip";
 import { WorkspaceSidebar, WorkspaceSidebarBody, useChatArtifacts } from "./WorkspaceSidebar";
 import { AppMobileNavTrigger } from "~/routes/app";
 import { getChatHost } from "~/lib/chat-host";
@@ -205,6 +207,30 @@ export function ChatRoom({
   // its arrival as the "transcript loaded" signal regardless of
   // length (zero-length messages → empty state, not skeleton).
   const [presence, setPresence] = useState<{ userId: string; joinedAt: number }[]>([]);
+
+  // Memory broadcasts (task a0e754). The chat-agent fires:
+  //   - `data_agent_memory_recall` at turn start with the facts the
+  //     model is about to see in its system prompt.
+  //   - `data_agent_memory_written` whenever the model calls
+  //     `memory.remember`.
+  //
+  // We hold the *latest* recall (one per turn — turns FIFO so this
+  // is unambiguous) and a list of writes since the last user
+  // message. Both reset when the user sends a new message — they're
+  // live-only affordances; the management page is the durable view.
+  //
+  // Why not key by message id? The WS frames carry `turnId`, which
+  // doesn't survive reload; mapping turnId → message id would
+  // require a server-side stamp on each persisted assistant message
+  // (and would be wasted complexity for v1's use case of "show what
+  // memory did *this* turn"). On reload the strip/chip just don't
+  // render — the agent's memory.remember audit row is the durable
+  // source.
+  const [latestRecall, setLatestRecall] = useState<{
+    turnId: string | null;
+    facts: RecalledFactSummary[];
+  } | null>(null);
+  const [recentWrites, setRecentWrites] = useState<WrittenFactSummary[]>([]);
   const memberDirectory = useMemo(() => {
     const map = new Map<string, ChatMemberSummary>();
     for (const m of members) map.set(m.userId, m);
@@ -235,6 +261,56 @@ export function ChatRoom({
           qc.invalidateQueries({ queryKey: ["chats"] });
           qc.invalidateQueries({ queryKey: ["chat", chatId] });
         }
+        // Memory recall: the chat-agent broadcasts this at turn start
+        // with the facts it's injecting into the system prompt. We
+        // *replace* (not append) so each turn shows only its own
+        // recall. The strip itself collapses by default — see
+        // `MemoryRecalledStrip` — so multi-fact recalls don't dominate
+        // the layout.
+        if (
+          parsed.type === "data_agent_memory_recall" &&
+          Array.isArray((parsed as { facts?: unknown }).facts)
+        ) {
+          const p = parsed as {
+            turnId?: string | null;
+            facts: Array<{ id: string; kind: string; content: string; score?: number }>;
+          };
+          setLatestRecall({
+            turnId: p.turnId ?? null,
+            facts: p.facts.map((f) => ({
+              id: f.id,
+              kind: f.kind,
+              content: f.content,
+              score: typeof f.score === "number" ? f.score : 0,
+            })),
+          });
+        }
+        // Memory write: append to the running list so multi-save
+        // turns surface every chip. Cleared when the user sends a
+        // new message (see the handleSend effect below).
+        if (parsed.type === "data_agent_memory_written") {
+          const p = parsed as {
+            fact?: { id?: string; kind?: string; content?: string };
+            inserted?: boolean;
+          };
+          if (
+            p.fact &&
+            typeof p.fact.id === "string" &&
+            typeof p.fact.kind === "string" &&
+            typeof p.fact.content === "string"
+          ) {
+            const fact: WrittenFactSummary = {
+              id: p.fact.id,
+              kind: p.fact.kind,
+              content: p.fact.content,
+              inserted: p.inserted !== false,
+            };
+            setRecentWrites((prev) => {
+              if (prev.some((f) => f.id === fact.id)) return prev;
+              return [...prev, fact];
+            });
+          }
+        }
       } catch {
         // not our message
       }
@@ -262,6 +338,10 @@ export function ChatRoom({
     (text: string) => {
       const trimmed = text.trim();
       if (!trimmed) return;
+      // Memory affordances are per-turn — clear the previous turn's
+      // recall strip and remembered chips so a new turn starts clean.
+      setLatestRecall(null);
+      setRecentWrites([]);
       chat.sendMessage({
         role: "user",
         parts: [{ type: "text", text: trimmed }],
@@ -362,6 +442,8 @@ export function ChatRoom({
             status={chat.status}
             error={chat.error}
             isSampleDb={isSampleDb}
+            recalledFacts={latestRecall?.facts ?? []}
+            writtenFacts={recentWrites}
           />
         ) : (
           <MessageListSkeleton />
@@ -509,11 +591,20 @@ function MessageList({
   status,
   error,
   isSampleDb,
+  recalledFacts,
+  writtenFacts,
 }: {
   messages: UIMessage[];
   status: string;
   error?: Error;
   isSampleDb: boolean;
+  /** Facts the agent recalled for the current turn, fed via the
+   *  parent's WS handler. Empty / null when no recall happened. */
+  recalledFacts: ReadonlyArray<RecalledFactSummary>;
+  /** Facts the model saved this turn via `memory.remember`. Cap of
+   *  3 enforced server-side. Cleared by the parent on each new
+   *  user send. */
+  writtenFacts: ReadonlyArray<WrittenFactSummary>;
 }): React.ReactElement {
   const viewportRef = useRef<HTMLDivElement | null>(null);
   // "stickToBottom" autoscroll: as long as the user is scrolled to
@@ -581,9 +672,26 @@ function MessageList({
       <ScrollAreaViewport ref={viewportRef} onScroll={onScroll} className="h-full max-h-full">
         <div className="mx-auto w-full max-w-4xl space-y-4 px-4 py-4 sm:px-6">
           {messages.length === 0 && <EmptyState isSampleDb={isSampleDb} />}
+          {/* Memory recall strip — sits above the assistant turn so
+              the user knows the response was informed by past chats.
+              Hidden until at least one assistant message has streamed
+              this turn (otherwise the strip floats with nothing to
+              anchor it visually). */}
+          {recalledFacts.length > 0 && <MemoryRecalledStrip facts={recalledFacts} />}
           {messages.map((m) => (
             <MessageBubble key={m.id} message={m} />
           ))}
+          {/* Memory chips — one per remember call this turn, capped
+              by REMEMBER_CALLS_PER_TURN (=3) on the server. Rendered
+              after the assistant message so they read as "footer"
+              context, not as part of the answer. */}
+          {writtenFacts.length > 0 && (
+            <div className="flex flex-wrap gap-2">
+              {writtenFacts.map((f) => (
+                <MemoryChip key={f.id} fact={f} />
+              ))}
+            </div>
+          )}
           {status === "submitted" && (
             <p className="flex items-center gap-2 text-xs text-muted-foreground">
               <span className="inline-flex gap-0.5">

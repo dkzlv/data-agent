@@ -8,172 +8,192 @@
 // You should NOT make any changes in this file as it will be overwritten.
 // Additionally, you should also exclude this file from your linter and/or formatter to prevent it from being checked or modified.
 
-import { Route as rootRouteImport } from './routes/__root'
-import { Route as LoginRouteImport } from './routes/login'
-import { Route as AppRouteImport } from './routes/app'
-import { Route as IndexRouteImport } from './routes/index'
-import { Route as AppIndexRouteImport } from './routes/app.index'
-import { Route as AppWelcomeRouteImport } from './routes/app.welcome'
-import { Route as AppDbProfilesRouteImport } from './routes/app.db-profiles'
-import { Route as AppChatsChatIdRouteImport } from './routes/app.chats.$chatId'
+import { Route as rootRouteImport } from "./routes/__root";
+import { Route as LoginRouteImport } from "./routes/login";
+import { Route as AppRouteImport } from "./routes/app";
+import { Route as IndexRouteImport } from "./routes/index";
+import { Route as AppIndexRouteImport } from "./routes/app.index";
+import { Route as AppWelcomeRouteImport } from "./routes/app.welcome";
+import { Route as AppDbProfilesRouteImport } from "./routes/app.db-profiles";
+import { Route as AppMemoryDbProfileIdRouteImport } from "./routes/app.memory.$dbProfileId";
+import { Route as AppChatsChatIdRouteImport } from "./routes/app.chats.$chatId";
 
 const LoginRoute = LoginRouteImport.update({
-  id: '/login',
-  path: '/login',
+  id: "/login",
+  path: "/login",
   getParentRoute: () => rootRouteImport,
-} as any)
+} as any);
 const AppRoute = AppRouteImport.update({
-  id: '/app',
-  path: '/app',
+  id: "/app",
+  path: "/app",
   getParentRoute: () => rootRouteImport,
-} as any)
+} as any);
 const IndexRoute = IndexRouteImport.update({
-  id: '/',
-  path: '/',
+  id: "/",
+  path: "/",
   getParentRoute: () => rootRouteImport,
-} as any)
+} as any);
 const AppIndexRoute = AppIndexRouteImport.update({
-  id: '/',
-  path: '/',
+  id: "/",
+  path: "/",
   getParentRoute: () => AppRoute,
-} as any)
+} as any);
 const AppWelcomeRoute = AppWelcomeRouteImport.update({
-  id: '/welcome',
-  path: '/welcome',
+  id: "/welcome",
+  path: "/welcome",
   getParentRoute: () => AppRoute,
-} as any)
+} as any);
 const AppDbProfilesRoute = AppDbProfilesRouteImport.update({
-  id: '/db-profiles',
-  path: '/db-profiles',
+  id: "/db-profiles",
+  path: "/db-profiles",
   getParentRoute: () => AppRoute,
-} as any)
+} as any);
+const AppMemoryDbProfileIdRoute = AppMemoryDbProfileIdRouteImport.update({
+  id: "/memory/$dbProfileId",
+  path: "/memory/$dbProfileId",
+  getParentRoute: () => AppRoute,
+} as any);
 const AppChatsChatIdRoute = AppChatsChatIdRouteImport.update({
-  id: '/chats/$chatId',
-  path: '/chats/$chatId',
+  id: "/chats/$chatId",
+  path: "/chats/$chatId",
   getParentRoute: () => AppRoute,
-} as any)
+} as any);
 
 export interface FileRoutesByFullPath {
-  '/': typeof IndexRoute
-  '/app': typeof AppRouteWithChildren
-  '/login': typeof LoginRoute
-  '/app/db-profiles': typeof AppDbProfilesRoute
-  '/app/welcome': typeof AppWelcomeRoute
-  '/app/': typeof AppIndexRoute
-  '/app/chats/$chatId': typeof AppChatsChatIdRoute
+  "/": typeof IndexRoute;
+  "/app": typeof AppRouteWithChildren;
+  "/login": typeof LoginRoute;
+  "/app/db-profiles": typeof AppDbProfilesRoute;
+  "/app/welcome": typeof AppWelcomeRoute;
+  "/app/": typeof AppIndexRoute;
+  "/app/chats/$chatId": typeof AppChatsChatIdRoute;
+  "/app/memory/$dbProfileId": typeof AppMemoryDbProfileIdRoute;
 }
 export interface FileRoutesByTo {
-  '/': typeof IndexRoute
-  '/login': typeof LoginRoute
-  '/app/db-profiles': typeof AppDbProfilesRoute
-  '/app/welcome': typeof AppWelcomeRoute
-  '/app': typeof AppIndexRoute
-  '/app/chats/$chatId': typeof AppChatsChatIdRoute
+  "/": typeof IndexRoute;
+  "/login": typeof LoginRoute;
+  "/app/db-profiles": typeof AppDbProfilesRoute;
+  "/app/welcome": typeof AppWelcomeRoute;
+  "/app": typeof AppIndexRoute;
+  "/app/chats/$chatId": typeof AppChatsChatIdRoute;
+  "/app/memory/$dbProfileId": typeof AppMemoryDbProfileIdRoute;
 }
 export interface FileRoutesById {
-  __root__: typeof rootRouteImport
-  '/': typeof IndexRoute
-  '/app': typeof AppRouteWithChildren
-  '/login': typeof LoginRoute
-  '/app/db-profiles': typeof AppDbProfilesRoute
-  '/app/welcome': typeof AppWelcomeRoute
-  '/app/': typeof AppIndexRoute
-  '/app/chats/$chatId': typeof AppChatsChatIdRoute
+  __root__: typeof rootRouteImport;
+  "/": typeof IndexRoute;
+  "/app": typeof AppRouteWithChildren;
+  "/login": typeof LoginRoute;
+  "/app/db-profiles": typeof AppDbProfilesRoute;
+  "/app/welcome": typeof AppWelcomeRoute;
+  "/app/": typeof AppIndexRoute;
+  "/app/chats/$chatId": typeof AppChatsChatIdRoute;
+  "/app/memory/$dbProfileId": typeof AppMemoryDbProfileIdRoute;
 }
 export interface FileRouteTypes {
-  fileRoutesByFullPath: FileRoutesByFullPath
+  fileRoutesByFullPath: FileRoutesByFullPath;
   fullPaths:
-    | '/'
-    | '/app'
-    | '/login'
-    | '/app/db-profiles'
-    | '/app/welcome'
-    | '/app/'
-    | '/app/chats/$chatId'
-  fileRoutesByTo: FileRoutesByTo
+    | "/"
+    | "/app"
+    | "/login"
+    | "/app/db-profiles"
+    | "/app/welcome"
+    | "/app/"
+    | "/app/chats/$chatId"
+    | "/app/memory/$dbProfileId";
+  fileRoutesByTo: FileRoutesByTo;
   to:
-    | '/'
-    | '/login'
-    | '/app/db-profiles'
-    | '/app/welcome'
-    | '/app'
-    | '/app/chats/$chatId'
+    | "/"
+    | "/login"
+    | "/app/db-profiles"
+    | "/app/welcome"
+    | "/app"
+    | "/app/chats/$chatId"
+    | "/app/memory/$dbProfileId";
   id:
-    | '__root__'
-    | '/'
-    | '/app'
-    | '/login'
-    | '/app/db-profiles'
-    | '/app/welcome'
-    | '/app/'
-    | '/app/chats/$chatId'
-  fileRoutesById: FileRoutesById
+    | "__root__"
+    | "/"
+    | "/app"
+    | "/login"
+    | "/app/db-profiles"
+    | "/app/welcome"
+    | "/app/"
+    | "/app/chats/$chatId"
+    | "/app/memory/$dbProfileId";
+  fileRoutesById: FileRoutesById;
 }
 export interface RootRouteChildren {
-  IndexRoute: typeof IndexRoute
-  AppRoute: typeof AppRouteWithChildren
-  LoginRoute: typeof LoginRoute
+  IndexRoute: typeof IndexRoute;
+  AppRoute: typeof AppRouteWithChildren;
+  LoginRoute: typeof LoginRoute;
 }
 
-declare module '@tanstack/react-router' {
+declare module "@tanstack/react-router" {
   interface FileRoutesByPath {
-    '/login': {
-      id: '/login'
-      path: '/login'
-      fullPath: '/login'
-      preLoaderRoute: typeof LoginRouteImport
-      parentRoute: typeof rootRouteImport
-    }
-    '/app': {
-      id: '/app'
-      path: '/app'
-      fullPath: '/app'
-      preLoaderRoute: typeof AppRouteImport
-      parentRoute: typeof rootRouteImport
-    }
-    '/': {
-      id: '/'
-      path: '/'
-      fullPath: '/'
-      preLoaderRoute: typeof IndexRouteImport
-      parentRoute: typeof rootRouteImport
-    }
-    '/app/': {
-      id: '/app/'
-      path: '/'
-      fullPath: '/app/'
-      preLoaderRoute: typeof AppIndexRouteImport
-      parentRoute: typeof AppRoute
-    }
-    '/app/welcome': {
-      id: '/app/welcome'
-      path: '/welcome'
-      fullPath: '/app/welcome'
-      preLoaderRoute: typeof AppWelcomeRouteImport
-      parentRoute: typeof AppRoute
-    }
-    '/app/db-profiles': {
-      id: '/app/db-profiles'
-      path: '/db-profiles'
-      fullPath: '/app/db-profiles'
-      preLoaderRoute: typeof AppDbProfilesRouteImport
-      parentRoute: typeof AppRoute
-    }
-    '/app/chats/$chatId': {
-      id: '/app/chats/$chatId'
-      path: '/chats/$chatId'
-      fullPath: '/app/chats/$chatId'
-      preLoaderRoute: typeof AppChatsChatIdRouteImport
-      parentRoute: typeof AppRoute
-    }
+    "/login": {
+      id: "/login";
+      path: "/login";
+      fullPath: "/login";
+      preLoaderRoute: typeof LoginRouteImport;
+      parentRoute: typeof rootRouteImport;
+    };
+    "/app": {
+      id: "/app";
+      path: "/app";
+      fullPath: "/app";
+      preLoaderRoute: typeof AppRouteImport;
+      parentRoute: typeof rootRouteImport;
+    };
+    "/": {
+      id: "/";
+      path: "/";
+      fullPath: "/";
+      preLoaderRoute: typeof IndexRouteImport;
+      parentRoute: typeof rootRouteImport;
+    };
+    "/app/": {
+      id: "/app/";
+      path: "/";
+      fullPath: "/app/";
+      preLoaderRoute: typeof AppIndexRouteImport;
+      parentRoute: typeof AppRoute;
+    };
+    "/app/welcome": {
+      id: "/app/welcome";
+      path: "/welcome";
+      fullPath: "/app/welcome";
+      preLoaderRoute: typeof AppWelcomeRouteImport;
+      parentRoute: typeof AppRoute;
+    };
+    "/app/db-profiles": {
+      id: "/app/db-profiles";
+      path: "/db-profiles";
+      fullPath: "/app/db-profiles";
+      preLoaderRoute: typeof AppDbProfilesRouteImport;
+      parentRoute: typeof AppRoute;
+    };
+    "/app/memory/$dbProfileId": {
+      id: "/app/memory/$dbProfileId";
+      path: "/memory/$dbProfileId";
+      fullPath: "/app/memory/$dbProfileId";
+      preLoaderRoute: typeof AppMemoryDbProfileIdRouteImport;
+      parentRoute: typeof AppRoute;
+    };
+    "/app/chats/$chatId": {
+      id: "/app/chats/$chatId";
+      path: "/chats/$chatId";
+      fullPath: "/app/chats/$chatId";
+      preLoaderRoute: typeof AppChatsChatIdRouteImport;
+      parentRoute: typeof AppRoute;
+    };
   }
 }
 
 interface AppRouteChildren {
-  AppDbProfilesRoute: typeof AppDbProfilesRoute
-  AppWelcomeRoute: typeof AppWelcomeRoute
-  AppIndexRoute: typeof AppIndexRoute
-  AppChatsChatIdRoute: typeof AppChatsChatIdRoute
+  AppDbProfilesRoute: typeof AppDbProfilesRoute;
+  AppWelcomeRoute: typeof AppWelcomeRoute;
+  AppIndexRoute: typeof AppIndexRoute;
+  AppChatsChatIdRoute: typeof AppChatsChatIdRoute;
+  AppMemoryDbProfileIdRoute: typeof AppMemoryDbProfileIdRoute;
 }
 
 const AppRouteChildren: AppRouteChildren = {
@@ -181,24 +201,25 @@ const AppRouteChildren: AppRouteChildren = {
   AppWelcomeRoute: AppWelcomeRoute,
   AppIndexRoute: AppIndexRoute,
   AppChatsChatIdRoute: AppChatsChatIdRoute,
-}
+  AppMemoryDbProfileIdRoute: AppMemoryDbProfileIdRoute,
+};
 
-const AppRouteWithChildren = AppRoute._addFileChildren(AppRouteChildren)
+const AppRouteWithChildren = AppRoute._addFileChildren(AppRouteChildren);
 
 const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
   AppRoute: AppRouteWithChildren,
   LoginRoute: LoginRoute,
-}
+};
 export const routeTree = rootRouteImport
   ._addFileChildren(rootRouteChildren)
-  ._addFileTypes<FileRouteTypes>()
+  ._addFileTypes<FileRouteTypes>();
 
-import type { getRouter } from './router.tsx'
-import type { createStart } from '@tanstack/react-start'
-declare module '@tanstack/react-start' {
+import type { getRouter } from "./router.tsx";
+import type { createStart } from "@tanstack/react-start";
+declare module "@tanstack/react-start" {
   interface Register {
-    ssr: true
-    router: Awaited<ReturnType<typeof getRouter>>
+    ssr: true;
+    router: Awaited<ReturnType<typeof getRouter>>;
   }
 }

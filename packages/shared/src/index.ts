@@ -5,4 +5,5 @@ export * from "./audit";
 export * from "./email";
 export * from "./encryption";
 export * from "./jwt";
+export * from "./memory";
 export * from "./obs";

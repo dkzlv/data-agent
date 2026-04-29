@@ -51,6 +51,9 @@ export interface TurnSnapshot {
   cancelReceivedAt: number;
   /** Userid of whoever sent the cancel frame, or null. */
   cancelReceivedFrom: string | null;
+  /** Fact ids injected via the recalled-facts system-prompt block.
+   *  Empty when memory was disabled or the recall returned nothing. */
+  recalledFactIds: string[];
 }
 
 const ZERO_TOKENS: Readonly<TurnTokens> = Object.freeze({
@@ -105,6 +108,19 @@ export class TurnState {
   cancelReceivedAt = 0;
   cancelReceivedFrom: string | null = null;
 
+  /**
+   * Per-turn `memory.remember` call counter (task a0e754). The tool
+   * checks this against `REMEMBER_CALLS_PER_TURN` and rejects beyond.
+   * Stored on the turn (rather than the agent) so it auto-resets
+   * with `start()` — no risk of a counter from yesterday's turn
+   * silently throttling today's.
+   */
+  memoryRememberCount = 0;
+  /** Ids of facts injected into the system prompt this turn. Stamped
+   *  on `turn.complete` audit so an operator can correlate "what did
+   *  the model see?" without replaying Vectorize. */
+  recalledFactIds: string[] = [];
+
   /** Begin a new turn. Stamps a fresh `turnId`, resets every counter. */
   start(userId: string | null): void {
     this.turnId = makeTurnId();
@@ -122,6 +138,21 @@ export class TurnState {
     this.reasoningElapsedMs = 0;
     this.cancelReceivedAt = 0;
     this.cancelReceivedFrom = null;
+    this.memoryRememberCount = 0;
+    this.recalledFactIds = [];
+  }
+
+  /** Bump the `memory.remember` per-turn counter and return the new
+   *  value. Tool body compares against the cap and rejects beyond. */
+  bumpMemoryRememberCount(): number {
+    this.memoryRememberCount += 1;
+    return this.memoryRememberCount;
+  }
+
+  /** Stamp the recalled fact ids for this turn. Single-shot — caller
+   *  is `beforeTurn` after the recall pipeline runs. */
+  setRecalledFactIds(ids: string[]): void {
+    this.recalledFactIds = ids;
   }
 
   /**
@@ -228,6 +259,7 @@ export class TurnState {
       reasoningElapsedMs: this.reasoningElapsedMs,
       cancelReceivedAt: this.cancelReceivedAt,
       cancelReceivedFrom: this.cancelReceivedFrom,
+      recalledFactIds: [...this.recalledFactIds],
     };
   }
 }

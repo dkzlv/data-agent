@@ -19,6 +19,10 @@ import { artifactTools, chartTools } from "./tools/artifact-tools";
 import { dbTools } from "./tools/db-tools";
 import { type RateLimitDecision, runRateLimitCheck } from "./rate-limits";
 import type { AgentHost } from "./agent-host";
+import { embedText } from "./memory/embed";
+import { hydrateFacts, persistFact, softDeleteFact } from "./memory/store";
+import { queryVectors, upsertVector } from "./memory/vectorize";
+import { retrieveMemory } from "./memory/retrieve";
 
 /**
  * Re-export so call sites that imported `DebugRpcHost` from this
@@ -59,9 +63,7 @@ export async function debugClearMessages(
 
 export async function debugRateLimits(host: DebugRpcHost): Promise<{
   ok: boolean;
-  decision:
-    | RateLimitDecision
-    | { ok: false; code: "no_chat_context" };
+  decision: RateLimitDecision | { ok: false; code: "no_chat_context" };
   tenantId: string | null;
 }> {
   const tenantId = host.chatContext.peek()?.tenantId ?? null;
@@ -192,9 +194,7 @@ export async function debugTitleProbe(
       temperature: 0.3,
       maxOutputTokens: 64,
     });
-    const usage = (
-      result as { usage?: { outputTokens?: number; reasoningTokens?: number } }
-    ).usage;
+    const usage = (result as { usage?: { outputTokens?: number; reasoningTokens?: number } }).usage;
     const reasoningTextLen = (result as { reasoningText?: string }).reasoningText?.length;
     return {
       ok: true,
@@ -396,3 +396,142 @@ export async function dbToolsSmoke(host: DebugRpcHost): Promise<{
 
 // `runRateLimitCheck` + driver inputs moved to `./rate-limits.ts`
 // (subtask c364ae). This module re-imports it for the debug RPC path.
+
+/**
+ * Memory smoke test (task a0e754).
+ *
+ * Drives a tenant+dbProfile pair through the full memory pipeline:
+ *   1. persistFact (insert)
+ *   2. embedText
+ *   3. upsertVector
+ *   4. queryVectors (verify the vector indexed and is findable)
+ *   5. hydrateFacts (sanity-check Postgres scope)
+ *   6. retrieveMemory (full pipeline)
+ *   7. softDeleteFact (cleanup)
+ *
+ * Caller passes tenantId + dbProfileId; both must be real rows in
+ * the control-plane (FK-enforced). The script side typically
+ * supplies the auto-seeded tenant for the dev user.
+ *
+ * Returns step-by-step results so the spike script can print a
+ * checklist. Throws on any step's hard error — the spike treats a
+ * non-zero exit as failure.
+ */
+export async function memorySmoke(
+  host: AgentHost,
+  args: { tenantId: string; dbProfileId: string }
+): Promise<{
+  inserted: { id: string; revived: boolean };
+  embed: { dims: number };
+  vector: { hits: number; topId: string | null; topScore: number | null };
+  hydrated: { count: number };
+  recall: { facts: number; topScore: number | null };
+  cleanup: { deletedId: string };
+}> {
+  const env = host.getEnv();
+  const content = `smoke fact ${Date.now()} — orders.total_cents is in cents not dollars`;
+
+  // 1. persist
+  const pres = await persistFact(env, {
+    tenantId: args.tenantId,
+    dbProfileId: args.dbProfileId,
+    kind: "schema_semantic",
+    content,
+    sourceChatId: host.name,
+    sourceTurnId: null,
+    createdBy: null,
+  });
+  if (!pres.ok) throw new Error(`persistFact failed: ${pres.reason}`);
+  const id = pres.row.id;
+
+  // 2. embed
+  const vec = await embedText(env, content);
+
+  // 3. upsert
+  await upsertVector(env, {
+    id,
+    values: vec,
+    tenantId: args.tenantId,
+    metadata: {
+      dbProfileId: args.dbProfileId,
+      kind: "schema_semantic",
+      createdAt: pres.row.createdAt.toISOString(),
+    },
+  });
+
+  // 4. query — give the index a moment to settle (V2 mutations are
+  // async). 1.5s is conservative; in practice it's often <500ms.
+  await new Promise((r) => setTimeout(r, 1500));
+  const hits = await queryVectors(env, {
+    vector: vec,
+    tenantId: args.tenantId,
+    dbProfileId: args.dbProfileId,
+    topK: 3,
+  });
+
+  // 5. hydrate
+  const rows = await hydrateFacts(env, {
+    tenantId: args.tenantId,
+    dbProfileId: args.dbProfileId,
+    ids: hits.map((h) => h.id),
+  });
+
+  // 6. retrieve
+  const recall = await retrieveMemory({
+    env,
+    tenantId: args.tenantId,
+    dbProfileId: args.dbProfileId,
+    query: "what unit are order totals in?",
+  });
+
+  // 7. soft-delete to leave the index clean
+  const deleted = await softDeleteFact(env, {
+    tenantId: args.tenantId,
+    dbProfileId: args.dbProfileId,
+    idOrHash: { kind: "id", value: id },
+  });
+
+  return {
+    inserted: { id, revived: pres.revivedFromSoftDelete },
+    embed: { dims: vec.length },
+    vector: {
+      hits: hits.length,
+      topId: hits[0]?.id ?? null,
+      topScore: hits[0]?.score ?? null,
+    },
+    hydrated: { count: rows.length },
+    recall: { facts: recall.facts.length, topScore: recall.scores[0] ?? null },
+    cleanup: { deletedId: deleted?.id ?? "<not_deleted>" },
+  };
+}
+
+/**
+ * Delete a list of fact ids from Vectorize. Used by
+ * `debug-memory-clear.ts` after the Postgres rows are gone so the
+ * vector index doesn't accumulate orphans.
+ *
+ * Returns the count attempted — V2's `deleteByIds` is async and
+ * we don't wait on the mutation id; the operator runs
+ * `inspect-memory.ts` afterwards to verify.
+ */
+export async function debugMemoryDeleteVectors(
+  host: AgentHost,
+  args: { ids: string[]; tenantId: string }
+): Promise<{ attempted: number }> {
+  const env = host.getEnv();
+  if (args.ids.length === 0) return { attempted: 0 };
+  // Chunk in 1000s — the binding accepts large arrays but smaller
+  // batches give better progress visibility on big sweeps.
+  const CHUNK = 1000;
+  for (let i = 0; i < args.ids.length; i += CHUNK) {
+    const slice = args.ids.slice(i, i + CHUNK);
+    try {
+      await env.VECTORIZE_MEMORY.deleteByIds(slice);
+    } catch (err) {
+      // Don't throw — log and continue. Worst case we leak a few
+      // orphan vectors that the periodic sweep will reap.
+      console.warn("vectorize deleteByIds failed:", truncateMessage(err));
+    }
+  }
+  return { attempted: args.ids.length };
+}

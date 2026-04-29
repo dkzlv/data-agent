@@ -39,6 +39,15 @@ export interface Env {
   // R2
   ARTIFACTS: R2Bucket;
 
+  /**
+   * Cross-chat memory vector index (task a0e754). Shared with
+   * chat-agent. The gateway uses it on DELETE to scrub the vector
+   * alongside the Postgres soft-delete; reads stay vector-side in
+   * chat-agent (REST returns Postgres rows only — vector search
+   * isn't exposed externally to keep the abuse surface small).
+   */
+  VECTORIZE_MEMORY: Vectorize;
+
   // Service binding to chat-agent worker
   CHAT_AGENT: Fetcher;
 

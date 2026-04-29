@@ -50,6 +50,18 @@ export interface Env {
   AI: Ai;
   LOADER: WorkerLoader;
   ARTIFACTS: R2Bucket;
+  /**
+   * Cross-chat memory vector index (task a0e754). Stores 768-d
+   * embeddings of `memory_fact.content` keyed by fact id. Postgres
+   * is the source of truth — Vectorize is the search index. Tenant
+   * isolation is hard via the `namespace` arg on every query/upsert.
+   *
+   * `Vectorize` (V2 — async mutations) rather than the deprecated
+   * beta `VectorizeIndex`. New indexes created via `wrangler
+   * vectorize create` after the V2 GA bind to this class regardless
+   * of how the binding is labelled in wrangler.jsonc.
+   */
+  VECTORIZE_MEMORY: Vectorize;
 
   // DO namespace (this worker hosts ChatAgent)
   CHAT_AGENT: DurableObjectNamespace;

@@ -70,6 +70,50 @@ describe("system prompt", () => {
     expect(_SECTIONS.OUTPUT_STYLE).toContain("ASK ONE clarifying question");
   });
 
+  it("teaches the cross-chat memory surface (recall + memory.* tool)", () => {
+    // Two surfaces are documented in HOW_TO_WORK:
+    //   - the `## Recalled facts` block (what the model SEES)
+    //   - the `memory.*` namespace (what the model CALLS to write)
+    expect(_SECTIONS.HOW_TO_WORK).toMatch(/Memory across chats/i);
+    expect(_SECTIONS.HOW_TO_WORK).toMatch(/Recalled facts/);
+    expect(_SECTIONS.HOW_TO_WORK).toMatch(/memory\.\*/);
+    expect(_SECTIONS.HOW_TO_WORK).toMatch(/memory\.forget/);
+    expect(_SECTIONS.HOW_TO_WORK).toMatch(/memory\.search/);
+    // Operator-readable guidance against runaway saves.
+    expect(_SECTIONS.HOW_TO_WORK).toMatch(/Don't save one-off requests/);
+  });
+
+  it("renders the recalled-facts block ONLY when facts are provided", () => {
+    // The "Memory across chats" copy in HOW_TO_WORK *describes* the
+    // block (so the model knows what it is when it sees it). The
+    // actual block-with-bullets is what we gate on. We assert on the
+    // exact heading variant that includes the parenthetical so we
+    // distinguish the literal block from the descriptive prose.
+    const HEADING = "## Recalled facts (from past chats with this database)";
+
+    // No facts → no rendered block.
+    const empty = buildSystemPrompt({
+      chatTitle: "x",
+      user: { name: "x", email: "x@y" },
+      database: { name: "x", host: "x", database: "x" },
+    });
+    expect(empty).not.toContain(HEADING);
+
+    // Facts present → block rendered with [kind] tags + content.
+    const withFacts = buildSystemPrompt({
+      chatTitle: "x",
+      user: { name: "x", email: "x@y" },
+      database: { name: "x", host: "x", database: "x" },
+      recalledFacts: [
+        { kind: "schema_semantic", content: "orders.total_cents is in cents not dollars" },
+        { kind: "business_def", content: "MRR = sum(active_subscriptions.amount)" },
+      ],
+    });
+    expect(withFacts).toContain(HEADING);
+    expect(withFacts).toContain("- [schema_semantic] orders.total_cents is in cents not dollars");
+    expect(withFacts).toContain("- [business_def] MRR = sum(active_subscriptions.amount)");
+  });
+
   it("does NOT include hardcoded credentials, dev URLs, or secrets", () => {
     const p = buildSystemPrompt({
       chatTitle: "x",

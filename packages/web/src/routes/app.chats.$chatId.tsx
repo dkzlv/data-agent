@@ -105,12 +105,7 @@ function ChatPageSkeleton() {
             ~64px to ~115px once the InputGroup chrome hydrated and
             the layout visibly jumped on every nav into a chat. */}
         <div className="shrink-0 border-t border-border bg-background px-4 py-3 sm:px-6">
-          <Composer
-            locked
-            isStreaming={false}
-            onSubmit={() => {}}
-            onStop={() => {}}
-          />
+          <Composer locked isStreaming={false} onSubmit={() => {}} onStop={() => {}} />
         </div>
       </div>
     </div>

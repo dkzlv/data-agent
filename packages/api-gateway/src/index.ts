@@ -5,6 +5,7 @@ import { createAuth } from "./auth";
 import { auditRouter } from "./routes/audit";
 import { chatsRouter } from "./routes/chats";
 import { dbProfilesRouter } from "./routes/db-profiles";
+import { memoryRouter } from "./routes/memory";
 import { wsRouter } from "./routes/ws";
 import type { RequestSession } from "./session";
 import type { Env } from "./env";
@@ -87,8 +88,7 @@ app.use("/api/*", async (c, next) => {
     if (trimmed) allowed.add(trimmed);
   }
   const isLocalhost =
-    requestOrigin.startsWith("http://localhost:") ||
-    requestOrigin.startsWith("http://127.0.0.1:");
+    requestOrigin.startsWith("http://localhost:") || requestOrigin.startsWith("http://127.0.0.1:");
   const origin = allowed.has(requestOrigin) || isLocalhost ? requestOrigin : c.env.APP_URL;
   return cors({
     origin,
@@ -123,6 +123,7 @@ api.route("/", wsRouter);
 api.route("/chats", chatsRouter);
 api.route("/db-profiles", dbProfilesRouter);
 api.route("/audit", auditRouter);
+api.route("/memory", memoryRouter);
 
 app.route("/api", api);
 
