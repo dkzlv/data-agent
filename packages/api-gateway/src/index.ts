@@ -2,11 +2,13 @@ import { Hono } from "hono";
 import { cors } from "hono/cors";
 import { logger } from "hono/logger";
 import { createAuth } from "./auth";
+import { dbProfilesRouter } from "./routes/db-profiles";
+import type { RequestSession } from "./session";
 import type { Env } from "./env";
 
 type Bindings = Env;
 type Variables = {
-  // populated in later subtasks
+  session?: RequestSession;
 };
 
 const app = new Hono<{ Bindings: Bindings; Variables: Variables }>();
@@ -46,8 +48,7 @@ api.post("/chats", (c) => c.json({ todo: "b1f5fd" }, 501));
 api.get("/chats/:id", (c) => c.json({ todo: "b1f5fd", id: c.req.param("id") }, 501));
 api.get("/chats/:id/ws", (c) => c.json({ todo: "e1a679", id: c.req.param("id") }, 501));
 
-api.get("/db-profiles", (c) => c.json({ todo: "b75305" }, 501));
-api.post("/db-profiles", (c) => c.json({ todo: "b75305" }, 501));
+api.route("/db-profiles", dbProfilesRouter);
 
 app.route("/api", api);
 

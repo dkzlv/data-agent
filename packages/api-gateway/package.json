@@ -14,7 +14,10 @@
     "@data-agent/db": "workspace:*",
     "@data-agent/shared": "workspace:*",
     "better-auth": "^1.6.9",
-    "hono": "^4.12.15"
+    "drizzle-orm": "^0.45.2",
+    "hono": "^4.12.15",
+    "postgres": "^3.4.9",
+    "zod": "^4.3.6"
   },
   "devDependencies": {
     "@cloudflare/workers-types": "^4.20260426.1",

@@ -3,7 +3,7 @@ import type { Env } from "./env";
 export { ChatAgent } from "./agent";
 
 export default {
-  async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
+  async fetch(request: Request, env: Env, _ctx: ExecutionContext): Promise<Response> {
     // Health check (handy for service-binding smoke tests from api-gateway)
     const url = new URL(request.url);
     if (url.pathname === "/healthz") {

@@ -13,6 +13,7 @@ import { Route as LoginRouteImport } from "./routes/login";
 import { Route as AppRouteImport } from "./routes/app";
 import { Route as IndexRouteImport } from "./routes/index";
 import { Route as AppIndexRouteImport } from "./routes/app.index";
+import { Route as AppDbProfilesRouteImport } from "./routes/app.db-profiles";
 
 const LoginRoute = LoginRouteImport.update({
   id: "/login",
@@ -34,16 +35,23 @@ const AppIndexRoute = AppIndexRouteImport.update({
   path: "/",
   getParentRoute: () => AppRoute,
 } as any);
+const AppDbProfilesRoute = AppDbProfilesRouteImport.update({
+  id: "/db-profiles",
+  path: "/db-profiles",
+  getParentRoute: () => AppRoute,
+} as any);
 
 export interface FileRoutesByFullPath {
   "/": typeof IndexRoute;
   "/app": typeof AppRouteWithChildren;
   "/login": typeof LoginRoute;
+  "/app/db-profiles": typeof AppDbProfilesRoute;
   "/app/": typeof AppIndexRoute;
 }
 export interface FileRoutesByTo {
   "/": typeof IndexRoute;
   "/login": typeof LoginRoute;
+  "/app/db-profiles": typeof AppDbProfilesRoute;
   "/app": typeof AppIndexRoute;
 }
 export interface FileRoutesById {
@@ -51,14 +59,15 @@ export interface FileRoutesById {
   "/": typeof IndexRoute;
   "/app": typeof AppRouteWithChildren;
   "/login": typeof LoginRoute;
+  "/app/db-profiles": typeof AppDbProfilesRoute;
   "/app/": typeof AppIndexRoute;
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath;
-  fullPaths: "/" | "/app" | "/login" | "/app/";
+  fullPaths: "/" | "/app" | "/login" | "/app/db-profiles" | "/app/";
   fileRoutesByTo: FileRoutesByTo;
-  to: "/" | "/login" | "/app";
-  id: "__root__" | "/" | "/app" | "/login" | "/app/";
+  to: "/" | "/login" | "/app/db-profiles" | "/app";
+  id: "__root__" | "/" | "/app" | "/login" | "/app/db-profiles" | "/app/";
   fileRoutesById: FileRoutesById;
 }
 export interface RootRouteChildren {
@@ -97,14 +106,23 @@ declare module "@tanstack/react-router" {
       preLoaderRoute: typeof AppIndexRouteImport;
       parentRoute: typeof AppRoute;
     };
+    "/app/db-profiles": {
+      id: "/app/db-profiles";
+      path: "/db-profiles";
+      fullPath: "/app/db-profiles";
+      preLoaderRoute: typeof AppDbProfilesRouteImport;
+      parentRoute: typeof AppRoute;
+    };
   }
 }
 
 interface AppRouteChildren {
+  AppDbProfilesRoute: typeof AppDbProfilesRoute;
   AppIndexRoute: typeof AppIndexRoute;
 }
 
 const AppRouteChildren: AppRouteChildren = {
+  AppDbProfilesRoute: AppDbProfilesRoute,
   AppIndexRoute: AppIndexRoute,
 };
 
