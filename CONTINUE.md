@@ -195,6 +195,31 @@ export function createAuth(env: Env) {
 }
 ```
 
+## State as of last hand-off
+
+After scaffolding all 5 packages (subtasks 1-7 done), the workspace is in this state:
+
+- **Build:** `pnpm build` runs to completion. Web SSR + client bundles compile.
+- **Typecheck:** `pnpm typecheck` clean across all packages.
+- **Lint/format:** clean.
+- **Database:** Neon connected, `_health` table migrated and round-tripped successfully.
+- **Cloudflare:**
+  - R2 bucket `data-agent-artifacts` exists
+  - Secrets Store `default_secrets_store` (id `5fca98fdba4f4972b9d14ac74ea58cf4`) ready (empty; secrets pushed via `scripts/push-secrets.sh` when needed)
+  - Worker Loader + AI binding both confirmed working on this account
+  - No workers deployed yet (only local dev)
+
+## Implementation notes / gotchas accumulated so far
+
+1. `wrangler` upgraded to 4.86 mid-session — pin in package.json's deps if reproducibility matters.
+2. `pnpm-workspace.yaml` (not `package.json`) is where `onlyBuiltDependencies` lives in pnpm 10.
+3. `Think<Env>` requires `override` modifier on `workspace` and `getModel`. `getModel()` needs an explicit `LanguageModel` return type or tsc trips on private members from AI SDK provider.
+4. `@cloudflare/workers-types` must be in `tsconfig.types[]` for any worker package — otherwise globals like `Request`, `Response`, `Ai`, `R2Bucket`, `Cloudflare.Env` don't resolve.
+5. TanStack Start expects `getRouter` (not `createRouter`) as the export name in `src/router.tsx` — the CF-Vite plugin pulls `getRouter` via virtual module.
+6. CF Vite plugin canonical wrangler.jsonc for TanStack Start: `"main": "@tanstack/react-start/server-entry"` (yes, an npm specifier, not a file path).
+7. Biome ignores .md/.sh by default. Lefthook glob must exclude them or biome exits 1.
+8. lefthook 1.13 hooks installed via post-install. v2.x is available — do not chase upgrades autonomously, dependabot will PR them.
+
 ## Progress log
 
 (append after each subtask)
@@ -205,7 +230,7 @@ export function createAuth(env: Env) {
 - [x] 93f695 Pick + provision control-plane DB
 - [x] 3c8c0b Scaffold api-gateway Worker
 - [x] 616db2 Scaffold ChatAgent DO
-- [ ] fde638 Scaffold web app
+- [x] fde638 Scaffold web app
 - [ ] 6c7414 Better Auth in control-plane
 - [ ] 5d7e7d Wire web app to Better Auth
 - [ ] 4cd388 Session JWT minting + validation
