@@ -7,7 +7,7 @@
  *   3. Decrypt `{ user, password }` with envelope encryption (AAD bound to
  *      tenantId|dbProfileId — defends against cross-tenant ciphertext swap).
  *   4. Open `postgres()` with conservative pool limits and ssl.
- *   5. Cache the handle on the agent instance for reuse across turns.
+ *   5. Cache the handle in the cell passed by the caller for reuse across turns.
  *
  * Connections are NOT closed eagerly — the DO will hibernate within ~70s
  * of inactivity which tears the underlying network sockets anyway. We
@@ -17,6 +17,11 @@
  * NOTE: this is the chat-agent's connection to the *user's* database
  * (the data plane). It is unrelated to the Drizzle handle we use for
  * the control-plane (Neon DB managed by us).
+ *
+ * Earlier this module took an `AgentLike` adapter to launder access to
+ * the agent's `protected env`. The agent now passes a `DataDbHandle`
+ * cell (a mutable holder) plus `env` + `chatId` directly — no adapter,
+ * no `this` aliasing.
  */
 import { eq } from "drizzle-orm";
 import postgres from "postgres";
@@ -39,25 +44,19 @@ export interface DataDbContext {
   };
 }
 
-/** Cached data-db handle stashed on the agent instance. Exported so the
- *  agent class can declare its `_dataDb?: CachedHandle` field. */
+/**
+ * Cache cell — a mutable holder kept on the agent so the same Postgres
+ * pool is reused across turns within a DO instance. Caller initializes
+ * this once (`{}`) and passes the same reference to every helper.
+ */
+export interface DataDbHandle {
+  current?: CachedHandle;
+}
+
+/** Cached data-db handle stashed in the holder. */
 export interface CachedHandle extends DataDbContext {
   /** Profile id this cached client is bound to — invalidate on chat profile swap. */
   profileId: string;
-}
-
-/**
- * Minimal contract these helpers need from a ChatAgent. Each helper takes
- * a getter for `env` so we don't bump into TypeScript's `protected` access
- * rules on the agent base class.
- */
-export interface AgentLike {
-  /** chat id — used as DO name. */
-  name: string;
-  /** Resolves the chat-agent worker env. */
-  getEnv(): Env;
-  /** In-memory cache slot for the data-db handle. */
-  _dataDb?: CachedHandle;
 }
 
 interface ResolvedChatProfile {
@@ -141,20 +140,26 @@ function buildConnectionString(
   return `postgres://${encodeURIComponent(user)}:${encodeURIComponent(password)}@${host}:${port}/${encodeURIComponent(database)}?${params.toString()}`;
 }
 
+export interface GetDataDbInputs {
+  env: Env;
+  chatId: string;
+  cache: DataDbHandle;
+}
+
 /**
- * Lazily build (and cache on the agent instance) the data-db connection.
+ * Lazily build (and cache in `inputs.cache`) the data-db connection.
  *
  * Throws if:
  *   - The chat has no `dbProfileId` attached (user must connect one first).
  *   - The profile can't be decrypted (key rotation / cross-tenant swap).
  *   - The Postgres connection itself fails to authenticate or reach the host.
  */
-export async function getDataDb(agent: AgentLike): Promise<DataDbContext> {
-  const cached = agent._dataDb;
+export async function getDataDb(inputs: GetDataDbInputs): Promise<DataDbContext> {
+  const cached = inputs.cache.current;
   if (cached) return cached;
 
-  const env = agent.getEnv();
-  const { tenantId, profile } = await resolveChatProfile(env, agent.name);
+  const { env, chatId } = inputs;
+  const { tenantId, profile } = await resolveChatProfile(env, chatId);
 
   const masterKey = await readSecret(env.MASTER_ENCRYPTION_KEY);
   // Postgres.js returns `bytea` columns as Node Buffer objects. Buffers
@@ -210,7 +215,7 @@ export async function getDataDb(agent: AgentLike): Promise<DataDbContext> {
     },
     profileId: profile.id,
   };
-  agent._dataDb = ctx;
+  inputs.cache.current = ctx;
   return ctx;
 }
 
@@ -218,10 +223,10 @@ export async function getDataDb(agent: AgentLike): Promise<DataDbContext> {
  * Force the next `getDataDb` call to re-resolve (e.g. after the user swaps
  * the chat's dbProfile or rotates credentials). Closes the existing pool.
  */
-export async function resetDataDb(agent: AgentLike): Promise<void> {
-  const cached = agent._dataDb;
+export async function resetDataDb(cache: DataDbHandle): Promise<void> {
+  const cached = cache.current;
   if (!cached) return;
-  agent._dataDb = undefined;
+  cache.current = undefined;
   try {
     await cached.sql.end({ timeout: 2 });
   } catch {

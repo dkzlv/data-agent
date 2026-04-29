@@ -159,6 +159,44 @@ export async function evaluatePolicy(
 }
 
 /**
+ * Driver: open a max=1 control-plane connection, run the rate-limit
+ * check against the live `audit_log` table, close the connection in
+ * the background via the caller's `waitUntil`.
+ *
+ * Lives here (not in agent.ts) so the connection lifecycle stays next
+ * to the policy that uses it. Caller passes `waitUntil` so a slow
+ * close doesn't block the calling hook.
+ */
+export interface RateLimitDriverInputs {
+  env: { CONTROL_PLANE_DB_URL: unknown };
+  chatId: string;
+  tenantId: string;
+  userId: string | null;
+  /** waitUntil-compatible callback. */
+  waitUntil: (p: Promise<unknown>) => void;
+}
+
+export async function runRateLimitCheck(
+  inputs: RateLimitDriverInputs
+): Promise<RateLimitDecision> {
+  const { createDbClient } = await import("@data-agent/db");
+  // Local import to avoid a top-level dependency on env.ts (the
+  // module is otherwise pure-policy + Database-typed).
+  const { readSecret } = await import("./env");
+  const url = await readSecret(inputs.env.CONTROL_PLANE_DB_URL as never);
+  const { db, client } = createDbClient({ url, max: 1 });
+  try {
+    return await checkRateLimits(db, {
+      tenantId: inputs.tenantId,
+      userId: inputs.userId,
+      chatId: inputs.chatId,
+    });
+  } finally {
+    inputs.waitUntil(client.end({ timeout: 1 }).catch(() => {}));
+  }
+}
+
+/**
  * Check all configured windows against the live `audit_log` table.
  * Returns the first failure, or `{ ok: true }` if everything is within
  * budget. Three small queries (indexed by `audit_log_tenant_created_idx`

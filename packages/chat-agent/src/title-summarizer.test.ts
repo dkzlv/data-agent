@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   extractFirstUserText,
+  maybeScheduleTitleSummary,
   sanitizeTitle,
   TITLE_SUMMARY_SYSTEM_PROMPT,
 } from "./title-summarizer";
@@ -166,5 +167,88 @@ describe("extractFirstUserText", () => {
         ],
       })
     ).toBeNull();
+  });
+});
+
+function userMsg(text: string) {
+  return { role: "user", parts: [{ type: "text", text }] };
+}
+
+describe("maybeScheduleTitleSummary", () => {
+
+  it("schedules on the first user message with usable text", () => {
+    const result = maybeScheduleTitleSummary({
+      chatId: "c",
+      tenantId: "t",
+      alreadyScheduled: false,
+      messages: [userMsg("show top customers by revenue")],
+    });
+    expect(result.scheduled).toBe(true);
+    if (result.scheduled) {
+      expect(result.userMessageText).toBe("show top customers by revenue");
+    }
+  });
+
+  it("skips when already scheduled", () => {
+    const result = maybeScheduleTitleSummary({
+      chatId: "c",
+      tenantId: "t",
+      alreadyScheduled: true,
+      messages: [userMsg("hello world")],
+    });
+    expect(result).toEqual({ scheduled: false, reason: "already_scheduled" });
+  });
+
+  it("skips when tenantId is null", () => {
+    const result = maybeScheduleTitleSummary({
+      chatId: "c",
+      tenantId: null,
+      alreadyScheduled: false,
+      messages: [userMsg("hi there friend")],
+    });
+    expect(result).toEqual({ scheduled: false, reason: "tenant_unresolved" });
+  });
+
+  it("skips on the second+ user message (steady state)", () => {
+    const result = maybeScheduleTitleSummary({
+      chatId: "c",
+      tenantId: "t",
+      alreadyScheduled: false,
+      messages: [userMsg("first"), { role: "assistant" }, userMsg("second")],
+    });
+    expect(result).toEqual({ scheduled: false, reason: "not_first_turn" });
+  });
+
+  it("skips when text is too short", () => {
+    const result = maybeScheduleTitleSummary({
+      chatId: "c",
+      tenantId: "t",
+      alreadyScheduled: false,
+      messages: [userMsg("hi")],
+    });
+    if (result.scheduled) throw new Error("expected skip");
+    expect(result.reason).toBe("text_too_short");
+    expect(result.textLen).toBe(2);
+  });
+
+  it("skips when message has no text parts", () => {
+    const result = maybeScheduleTitleSummary({
+      chatId: "c",
+      tenantId: "t",
+      alreadyScheduled: false,
+      messages: [{ role: "user", parts: [{ type: "tool-call" }] }],
+    });
+    if (result.scheduled) throw new Error("expected skip");
+    expect(result.reason).toBe("no_text");
+  });
+
+  it("treats messages array of unexpected shape as not_first_turn", () => {
+    const result = maybeScheduleTitleSummary({
+      chatId: "c",
+      tenantId: "t",
+      alreadyScheduled: false,
+      messages: "garbage" as never,
+    });
+    expect(result).toEqual({ scheduled: false, reason: "not_first_turn" });
   });
 });
