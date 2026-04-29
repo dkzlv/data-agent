@@ -20,6 +20,7 @@ import type { UIMessage } from "ai";
 import { useAgent } from "agents/react";
 import { useAgentChat } from "@cloudflare/ai-chat/react";
 import { useQueryClient } from "@tanstack/react-query";
+import { AnimatePresence, motion } from "motion/react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import TextareaAutosize from "react-textarea-autosize";
@@ -53,6 +54,13 @@ import {
   ScrollAreaViewport,
 } from "~/components/ui/scroll-area";
 import { Sheet, SheetContent, SheetHeader, SheetTitle, SheetTrigger } from "~/components/ui/sheet";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuLabel,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from "~/components/ui/dropdown-menu";
 import { Tooltip, TooltipContent, TooltipTrigger } from "~/components/ui/tooltip";
 import { EMPLOYEES_DEMO_PROMPTS } from "~/lib/sample-db";
 import { cn } from "~/lib/utils";
@@ -554,12 +562,20 @@ interface UIPart {
 function MessageBubble({ message }: { message: UIMessage }) {
   const isUser = message.role === "user";
   const parts = (message.parts as unknown as UIPart[]) ?? [];
+  // Assistant turns frequently contain wide content — tool-call rows,
+  // artifact previews, code blocks — that look cramped inside the old
+  // 78ch bubble. We drop the background and let assistant content
+  // span the full message-list width so charts and tables breathe.
+  // User bubbles still get the chat-style pill so it reads as their
+  // turn.
   return (
-    <div className={isUser ? "flex justify-end" : "flex justify-start"}>
+    <div className={isUser ? "flex justify-end" : "flex w-full"}>
       <div
         className={cn(
-          "max-w-[78ch] rounded-2xl px-4 py-3 text-sm",
-          isUser ? "bg-primary text-primary-foreground" : "bg-muted text-foreground"
+          "text-sm",
+          isUser
+            ? "max-w-[78ch] rounded-2xl bg-primary px-4 py-3 text-primary-foreground"
+            : "w-full text-foreground"
         )}
       >
         {parts.map((part, i) => (
@@ -652,25 +668,49 @@ function ReasoningPart({ part }: { part: UIPart }) {
 
   const label = streaming ? `Thinking…` : `Thought for ${seconds}s`;
 
+  // Controlled open state so AnimatePresence can drive an expand
+  // animation. The native <details> element animates synchronously
+  // (no transition on `display`) and the user wanted a smooth grow
+  // on every expandable thing in the chat.
+  const [open, setOpen] = useState(false);
+
   return (
-    <details className="group my-1 text-[12px]">
-      <summary
+    <div className="my-1 text-[12px]">
+      <button
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        aria-expanded={open}
         className={cn(
-          // Match the "Thought for 12s ›" mock: muted, single-line,
-          // chevron rotates on open. No box, no borders — it's a quiet
-          // affordance that the user can drill into if curious.
+          // Quiet affordance — same visual weight as the old <summary>.
           "flex w-fit cursor-pointer select-none items-center gap-1 rounded-md py-0.5 text-muted-foreground/80 transition hover:text-foreground"
         )}
       >
         <span className="text-[13px]">{label}</span>
-        <ChevronRight className="h-3.5 w-3.5 shrink-0 transition group-open:rotate-90" />
-      </summary>
-      {text && (
-        <div className="mt-1.5 ml-1 whitespace-pre-wrap border-l-2 border-border pl-3 italic leading-relaxed text-muted-foreground">
-          {text}
-        </div>
-      )}
-    </details>
+        <motion.span
+          className="inline-flex"
+          animate={{ rotate: open ? 90 : 0 }}
+          transition={{ duration: 0.2, ease: [0.4, 0, 0.2, 1] }}
+        >
+          <ChevronRight className="h-3.5 w-3.5 shrink-0" />
+        </motion.span>
+      </button>
+      <AnimatePresence initial={false}>
+        {open && text && (
+          <motion.div
+            key="reasoning"
+            initial={{ height: 0, opacity: 0 }}
+            animate={{ height: "auto", opacity: 1 }}
+            exit={{ height: 0, opacity: 0 }}
+            transition={{ duration: 0.22, ease: [0.4, 0, 0.2, 1] }}
+            className="overflow-hidden"
+          >
+            <div className="mt-1.5 ml-1 whitespace-pre-wrap border-l-2 border-border pl-3 italic leading-relaxed text-muted-foreground">
+              {text}
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+    </div>
   );
 }
 
@@ -727,6 +767,11 @@ function ToolPart({ part }: { part: UIPart }) {
       ? safeJsonStringify(part.input)
       : "";
 
+  // Controlled expand state so we can drive an actual height
+  // transition via AnimatePresence (the native <details> element
+  // doesn't animate display:none → display:block).
+  const [open, setOpen] = useState(false);
+
   return (
     <div className="my-1 space-y-1.5">
       {artifact ? <ArtifactViewer ref={artifact} /> : null}
@@ -741,10 +786,13 @@ function ToolPart({ part }: { part: UIPart }) {
           ) : null}
         </p>
       )}
-      <details className="group overflow-hidden rounded-lg border border-border bg-background/40 text-[13px]">
-        <summary
+      <div className="overflow-hidden rounded-lg border border-border bg-background/40 text-[13px]">
+        <button
+          type="button"
+          onClick={() => setOpen((v) => !v)}
+          aria-expanded={open}
           className={cn(
-            "flex cursor-pointer select-none items-center gap-2 px-3 py-2",
+            "flex w-full cursor-pointer select-none items-center gap-2 px-3 py-2 text-left",
             "transition-colors hover:bg-muted/40"
           )}
         >
@@ -753,26 +801,47 @@ function ToolPart({ part }: { part: UIPart }) {
           {description && (
             <span className="min-w-0 flex-1 truncate text-muted-foreground">{description}</span>
           )}
-          <ChevronRight className="ml-auto h-4 w-4 shrink-0 text-muted-foreground transition group-open:rotate-90" />
-        </summary>
+          <motion.span
+            className="ml-auto inline-flex"
+            animate={{ rotate: open ? 90 : 0 }}
+            transition={{ duration: 0.2, ease: [0.4, 0, 0.2, 1] }}
+          >
+            <ChevronRight className="h-4 w-4 shrink-0 text-muted-foreground" />
+          </motion.span>
+        </button>
 
-        <div className="space-y-3 border-t border-border bg-background/60 p-3">
-          {bodyCode && <CodeBlock code={bodyCode} language={bodyLanguage} className="max-h-80" />}
+        <AnimatePresence initial={false}>
+          {open && (
+            <motion.div
+              key="body"
+              initial={{ height: 0, opacity: 0 }}
+              animate={{ height: "auto", opacity: 1 }}
+              exit={{ height: 0, opacity: 0 }}
+              transition={{ duration: 0.22, ease: [0.4, 0, 0.2, 1] }}
+              className="overflow-hidden"
+            >
+              <div className="space-y-3 border-t border-border bg-background/60 p-3">
+                {bodyCode && (
+                  <CodeBlock code={bodyCode} language={bodyLanguage} className="max-h-80" />
+                )}
 
-          {/* Result panel — not all tool calls produce one (e.g. void
-              returns, or codemode functions that resolved to undefined). */}
-          {isCodemode && codemodeOutput !== null && <ToolResult>{codemodeOutput}</ToolResult>}
-          {!isCodemode && part.output != null && (
-            <ToolResult>{safeJsonStringify(part.output)}</ToolResult>
+                {/* Result panel — not all tool calls produce one (e.g. void
+                    returns, or codemode functions that resolved to undefined). */}
+                {isCodemode && codemodeOutput !== null && <ToolResult>{codemodeOutput}</ToolResult>}
+                {!isCodemode && part.output != null && (
+                  <ToolResult>{safeJsonStringify(part.output)}</ToolResult>
+                )}
+
+                {part.errorText && (
+                  <p className="rounded-md border border-destructive/40 bg-destructive/10 px-2.5 py-1.5 text-xs text-destructive">
+                    {part.errorText}
+                  </p>
+                )}
+              </div>
+            </motion.div>
           )}
-
-          {part.errorText && (
-            <p className="rounded-md border border-destructive/40 bg-destructive/10 px-2.5 py-1.5 text-xs text-destructive">
-              {part.errorText}
-            </p>
-          )}
-        </div>
-      </details>
+        </AnimatePresence>
+      </div>
     </div>
   );
 }
@@ -1006,6 +1075,13 @@ function summarizeToolError(
   return { headline: `${toolName} failed`, detail };
 }
 
+/**
+ * Members dropdown — opens to a list of chat members with online/offline
+ * dots. Earlier this was a bespoke popover that closed on `mouseleave`
+ * which felt broken on click-outside / mobile. Switched to the shadcn
+ * DropdownMenu so it gets focus management, escape-to-close, click-
+ * outside, and keyboard nav for free.
+ */
 function MembersPopover({
   members,
   active,
@@ -1013,61 +1089,52 @@ function MembersPopover({
   members: ChatMemberSummary[];
   active: { userId: string; joinedAt: number }[];
 }) {
-  const [open, setOpen] = useState(false);
   if (members.length === 0) return null;
   const activeIds = new Set(active.map((u) => u.userId));
   return (
-    <div className="relative">
-      <Button
-        type="button"
-        variant="ghost"
-        size="sm"
-        onClick={() => setOpen((v) => !v)}
-        aria-haspopup
-        aria-expanded={open}
-        className="gap-1.5"
-      >
-        <Users className="h-3.5 w-3.5" />
-        <span className="hidden sm:inline">
-          {members.length} member{members.length === 1 ? "" : "s"}
-        </span>
-        <span className="sm:hidden">{members.length}</span>
-      </Button>
-      {open && (
-        <div
-          role="dialog"
-          className="absolute right-0 top-full z-10 mt-1 w-64 overflow-hidden rounded-lg border border-border bg-popover text-popover-foreground shadow-lg"
-          onMouseLeave={() => setOpen(false)}
-        >
-          <ul className="max-h-72 overflow-y-auto py-1">
-            {members.map((m) => (
-              <li key={m.userId} className="flex items-center gap-2 px-3 py-2 text-xs">
-                <span
-                  className="inline-block h-2 w-2 rounded-full"
-                  style={{
-                    background: activeIds.has(m.userId) ? "#10b981" : "#a3a3a3",
-                  }}
-                  aria-label={activeIds.has(m.userId) ? "online" : "offline"}
-                />
-                <span className="min-w-0 flex-1">
-                  <span className="block truncate font-medium text-foreground">
-                    {m.name || m.email}
-                  </span>
-                  {m.name && (
-                    <span className="block truncate text-[10px] text-muted-foreground">
-                      {m.email}
-                    </span>
-                  )}
+    <DropdownMenu>
+      <DropdownMenuTrigger asChild>
+        <Button type="button" variant="ghost" size="sm" className="gap-1.5">
+          <Users className="h-3.5 w-3.5" />
+          <span className="hidden sm:inline">
+            {members.length} member{members.length === 1 ? "" : "s"}
+          </span>
+          <span className="sm:hidden">{members.length}</span>
+        </Button>
+      </DropdownMenuTrigger>
+      <DropdownMenuContent align="end" className="w-64 p-0">
+        <DropdownMenuLabel className="px-3 py-2 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
+          Members
+        </DropdownMenuLabel>
+        <DropdownMenuSeparator className="my-0" />
+        <ul className="max-h-72 overflow-y-auto py-1">
+          {members.map((m) => (
+            <li key={m.userId} className="flex items-center gap-2 px-3 py-2 text-xs">
+              <span
+                className="inline-block h-2 w-2 shrink-0 rounded-full"
+                style={{
+                  background: activeIds.has(m.userId) ? "#10b981" : "#a3a3a3",
+                }}
+                aria-label={activeIds.has(m.userId) ? "online" : "offline"}
+              />
+              <span className="min-w-0 flex-1">
+                <span className="block truncate font-medium text-foreground">
+                  {m.name || m.email}
                 </span>
-                <Badge variant="muted" className="text-[10px] uppercase">
-                  {m.role}
-                </Badge>
-              </li>
-            ))}
-          </ul>
-        </div>
-      )}
-    </div>
+                {m.name && (
+                  <span className="block truncate text-[10px] text-muted-foreground">
+                    {m.email}
+                  </span>
+                )}
+              </span>
+              <Badge variant="muted" className="text-[10px] uppercase">
+                {m.role}
+              </Badge>
+            </li>
+          ))}
+        </ul>
+      </DropdownMenuContent>
+    </DropdownMenu>
   );
 }
 

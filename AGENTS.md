@@ -563,7 +563,24 @@ project. Don't undo without reading the relevant context.
     new binding for a one-off, best-effort, single-call workload.
     Race-guarded persist (`WHERE title_auto_generated = true AND
     title = 'New chat'`) means a manual rename always wins, so
-    losing the model call is a no-op.
+    losing the model call is a no-op. **Important:** the
+    summarizer call passes `chat_template_kwargs.enable_thinking
+    = false` and `reasoning_effort = "low"` — the chat path enables
+    thinking by default and on Kimi K2.6 those reasoning tokens
+    consume the entire 64-token output budget before any title
+    text is emitted. Earlier the chat list silently never updated
+    away from "New chat" because of this; don't undo without
+    bumping `maxOutputTokens` substantially.
+16. **Cached session gate on `/app`.** `app.tsx` `beforeLoad` runs on
+    every intra-app navigation by default, and our auth check is a
+    network call to better-auth's `/get-session`. The earlier setup
+    re-hit that endpoint on every nav and TanStack Router unmounted
+    the previous match while waiting, which surfaced as a flash of
+    white (papercut). We memoize the session check in a
+    module-scoped promise (`sessionGate`) so it resolves once per
+    page load. The api-gateway is still the authoritative gate —
+    every data fetch re-validates the cookie server-side, so the
+    cached client-side gate doesn't widen the auth surface.
 
 ## Anti-patterns to avoid
 

@@ -1,28 +1,19 @@
 import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { useEffect, useState } from "react";
-import { ChevronRight, Plus } from "lucide-react";
+import { useEffect } from "react";
+import { ChevronRight, Plus, Database } from "lucide-react";
 import { chatsApi, dbProfilesApi } from "~/lib/api";
 import { isSampleProfile } from "~/lib/sample-db";
 import { Badge } from "~/components/ui/badge";
 import { Button } from "~/components/ui/button";
-import { Label } from "~/components/ui/label";
 import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-  DialogTrigger,
-} from "~/components/ui/dialog";
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "~/components/ui/select";
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuLabel,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from "~/components/ui/dropdown-menu";
 import { Alert, AlertDescription } from "~/components/ui/alert";
 import { ListSkeleton } from "~/components/list-skeleton";
 
@@ -98,96 +89,103 @@ function ChatsRoute() {
   );
 }
 
+/**
+ * "New chat" entry point.
+ *
+ * Behaviour by connection count:
+ *   - 0 connections → button routes the user to `/app/db-profiles`
+ *     so they can add one before creating a chat.
+ *   - 1 connection  → button creates a chat against it immediately
+ *     (no menu, no extra click — the only choice is obvious).
+ *   - 2+ connections → button opens a DropdownMenu listing the
+ *     connections; clicking one creates the chat.
+ *
+ * Earlier this was a Dialog with a database <Select> and a
+ * `Create` submit button — three clicks for the common single-DB
+ * case. The dropdown collapses that to one click for the mid-case
+ * and zero extra clicks for the single-DB case. Auto-titling means
+ * we no longer need a `title` field at create time.
+ */
 function NewChatDialog() {
   const qc = useQueryClient();
   const navigate = useNavigate();
-  const [open, setOpen] = useState(false);
-  // No `title` state — the chat starts as "New chat" and the
-  // chat-agent renames it from the first user message (subtask 16656a).
-  // Removed the manual title input to make creation a single-click
-  // (or single-select-and-click) flow.
-  const [dbProfileId, setDbProfileId] = useState<string>("none");
 
   const profiles = useQuery({
     queryKey: ["db-profiles"],
     queryFn: () => dbProfilesApi.list().then((r) => r.profiles),
-    enabled: open,
   });
 
   const create = useMutation({
-    mutationFn: () =>
-      chatsApi.create({
-        dbProfileId: dbProfileId === "none" ? undefined : dbProfileId,
-      }),
+    mutationFn: (dbProfileId: string | undefined) => chatsApi.create({ dbProfileId }),
     onSuccess: ({ chat }) => {
       qc.invalidateQueries({ queryKey: ["chats"] });
-      setOpen(false);
-      setDbProfileId("none");
       navigate({ to: "/app/chats/$chatId", params: { chatId: chat.id } });
     },
   });
 
-  return (
-    <Dialog open={open} onOpenChange={setOpen}>
-      <DialogTrigger asChild>
-        <Button size="sm">
+  const isPending = create.isPending || profiles.isLoading;
+  const list = profiles.data ?? [];
+
+  // Zero connections → guide the user to add one.
+  if (!profiles.isLoading && list.length === 0) {
+    return (
+      <Button size="sm" asChild>
+        <Link to="/app/db-profiles">
           <Plus className="h-4 w-4" />
           New chat
-        </Button>
-      </DialogTrigger>
-      <DialogContent>
-        <DialogHeader>
-          <DialogTitle>New chat</DialogTitle>
-          <DialogDescription>
-            Pick a database to attach. You can create a chat without one and attach later. We'll
-            auto-title the chat from your first message.
-          </DialogDescription>
-        </DialogHeader>
-        <form
-          onSubmit={(e) => {
-            e.preventDefault();
-            create.mutate();
-          }}
-          className="space-y-4"
-        >
-          <div className="space-y-2">
-            <Label htmlFor="db">Database</Label>
-            <Select value={dbProfileId} onValueChange={setDbProfileId}>
-              <SelectTrigger id="db">
-                <SelectValue placeholder="No database" />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="none">No database</SelectItem>
-                {profiles.data?.map((p) => (
-                  <SelectItem key={p.id} value={p.id}>
-                    <span className="inline-flex items-center gap-2">
-                      <span>{p.name}</span>
-                      {isSampleProfile(p) && (
-                        <Badge variant="muted" className="text-[10px] uppercase">
-                          Demo
-                        </Badge>
-                      )}
-                    </span>
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-          </div>
-          {create.error && (
-            <Alert variant="destructive">
-              <AlertDescription>{(create.error as Error).message}</AlertDescription>
-            </Alert>
-          )}
-          <DialogFooter>
-            <Button type="button" variant="ghost" onClick={() => setOpen(false)}>
-              Cancel
-            </Button>
-            <Button type="submit" disabled={create.isPending}>
-              {create.isPending ? "Creating…" : "Create"}
-            </Button>
-          </DialogFooter>
-        </form>
-      </DialogContent>
-    </Dialog>
+        </Link>
+      </Button>
+    );
+  }
+
+  // Single connection → one-click create. Don't bother showing a menu
+  // when there's only ever one possible choice.
+  if (list.length === 1) {
+    const only = list[0]!;
+    return (
+      <Button size="sm" disabled={isPending} onClick={() => create.mutate(only.id)}>
+        <Plus className="h-4 w-4" />
+        {create.isPending ? "Creating…" : "New chat"}
+      </Button>
+    );
+  }
+
+  return (
+    <div className="space-y-2">
+      <DropdownMenu>
+        <DropdownMenuTrigger asChild>
+          <Button size="sm" disabled={isPending}>
+            <Plus className="h-4 w-4" />
+            New chat
+          </Button>
+        </DropdownMenuTrigger>
+        <DropdownMenuContent align="end" className="w-64">
+          <DropdownMenuLabel className="text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
+            Pick a database
+          </DropdownMenuLabel>
+          <DropdownMenuSeparator />
+          {list.map((p) => (
+            <DropdownMenuItem
+              key={p.id}
+              onSelect={() => create.mutate(p.id)}
+              className="gap-2"
+            >
+              <Database className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+              <span className="min-w-0 flex-1 truncate">{p.name}</span>
+              {isSampleProfile(p) && (
+                <Badge variant="muted" className="text-[10px] uppercase">
+                  Demo
+                </Badge>
+              )}
+            </DropdownMenuItem>
+          ))}
+        </DropdownMenuContent>
+      </DropdownMenu>
+      {create.error && (
+        <Alert variant="destructive">
+          <AlertDescription>{(create.error as Error).message}</AlertDescription>
+        </Alert>
+      )}
+    </div>
   );
 }

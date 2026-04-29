@@ -213,8 +213,13 @@ function ChartBody({ specJson, fullWidth = false }: { specJson: string; fullWidt
       // sized chart and we then show it in the dialog, the chart
       // would otherwise stay narrow with a sea of empty space.
       const renderSpec = fullWidth ? { ...spec, width: "container" } : spec;
+      // Vega-embed's hamburger menu (export/source/compiled/editor)
+      // is noisy chrome on top of the chart and the user explicitly
+      // doesn't want it — there's no scenario in this app where the
+      // viewer needs an "open in editor" affordance. `actions: false`
+      // hides the menu entirely.
       vegaEmbed(ref.current, renderSpec, {
-        actions: { export: true, source: false, compiled: false, editor: false },
+        actions: false,
         renderer: "canvas",
         config: vegaThemeConfig(resolved === "dark"),
       })

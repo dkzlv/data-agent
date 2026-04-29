@@ -6,11 +6,35 @@ import { Button } from "~/components/ui/button";
 import { Sheet, SheetContent, SheetHeader, SheetTitle, SheetTrigger } from "~/components/ui/sheet";
 import { ThemeToggle } from "~/components/theme-toggle";
 
+/**
+ * Cache the session result for the lifetime of the page so we don't
+ * re-hit `/api/auth/get-session` on every intra-app navigation. The
+ * earlier setup ran the network round-trip from `beforeLoad` for every
+ * /app/* nav — most visibly when going from /app to /app/chats/$id,
+ * where TanStack Router unmounts the previous match while waiting on
+ * `beforeLoad` and the user sees a flash of white. The per-route auth
+ * check still happens on the *first* visit (so directly hitting
+ * /app/chats/<id> in a fresh tab still bounces unauthenticated users
+ * to /login), and the api-gateway is the authoritative gate — every
+ * data fetch re-validates the cookie server-side.
+ */
+let sessionGate: Promise<boolean> | null = null;
+function ensureSession(): Promise<boolean> {
+  if (sessionGate) return sessionGate;
+  sessionGate = authClient
+    .getSession()
+    .then((s) => Boolean(s.data?.user))
+    .catch(() => false);
+  return sessionGate;
+}
+
 export const Route = createFileRoute("/app")({
   beforeLoad: async () => {
     if (typeof window === "undefined") return;
-    const session = await authClient.getSession();
-    if (!session.data?.user) {
+    const ok = await ensureSession();
+    if (!ok) {
+      // Reset the cached promise so a subsequent re-auth path can try again.
+      sessionGate = null;
       throw redirect({ to: "/login" });
     }
   },

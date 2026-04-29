@@ -44,8 +44,14 @@ export function WorkspaceSidebar({ chatId }: WorkspaceSidebarProps) {
  * Body that's reused between the permanent desktop sidebar and the
  * mobile Sheet. Owns its own dialog state so the artifact preview
  * works the same in either context.
+ *
+ * `inSheet` shifts the header so the artifact-count badge doesn't
+ * sit underneath the Sheet's auto-injected close button (X) — the
+ * Sheet pins that button at `top-4 right-4` and the count was
+ * landing exactly there. We pad the header right so they don't
+ * collide visually or steal each other's clicks.
  */
-function WorkspaceContent({ chatId }: { chatId: string }) {
+function WorkspaceContent({ chatId, inSheet = false }: { chatId: string; inSheet?: boolean }) {
   const list = useQuery({
     queryKey: ["chat-artifacts", chatId],
     queryFn: () => chatsApi.listArtifacts(chatId),
@@ -58,7 +64,15 @@ function WorkspaceContent({ chatId }: { chatId: string }) {
 
   return (
     <>
-      <header className="flex items-center justify-between border-b border-sidebar-border px-3 py-2.5">
+      <header
+        className={cn(
+          "flex items-center justify-between border-b border-sidebar-border px-3 py-2.5",
+          // Reserve space for the Sheet's absolute-positioned close
+          // button at top-right; without this the artifact count badge
+          // sits underneath it on mobile.
+          inSheet && "pr-10"
+        )}
+      >
         <h2 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
           Workspace
         </h2>
@@ -123,7 +137,7 @@ function WorkspaceContent({ chatId }: { chatId: string }) {
 export function WorkspaceSidebarBody({ chatId }: WorkspaceSidebarProps) {
   return (
     <div className="flex h-full flex-col">
-      <WorkspaceContent chatId={chatId} />
+      <WorkspaceContent chatId={chatId} inSheet />
     </div>
   );
 }

@@ -189,9 +189,19 @@ export async function summarizeAndPersistTitle(env: Env, opts: SummarizeOpts): P
         | "@cf/moonshotai/kimi-k2.6"
         | "@cf/zai-org/glm-4.7-flash"
         | "@cf/openai/gpt-oss-120b",
-      // Reasoning effort defaults to medium on the chat path; for a
-      // title we don't need reasoning at all.
-      gateway ? { gateway } : {}
+      {
+        // For a 3-6 word title we don't want reasoning. Kimi K2.6 has
+        // thinking enabled by default on the chat path; if the title
+        // call inherits that, the thinking tokens consume the entire
+        // (small) output-token budget before any title text is emitted.
+        // Earlier the summarizer never produced a title for the common
+        // chat model and the chat list stayed at "New chat" forever.
+        chat_template_kwargs: {
+          enable_thinking: false,
+        },
+        reasoning_effort: "low",
+        ...(gateway ? { gateway } : {}),
+      }
     );
 
     const result = await generateText({
@@ -199,7 +209,11 @@ export async function summarizeAndPersistTitle(env: Env, opts: SummarizeOpts): P
       system: TITLE_SUMMARY_SYSTEM_PROMPT,
       prompt: opts.userMessageText,
       temperature: 0.3,
-      maxOutputTokens: 24,
+      // Bumped from 24 → 64 so the model has room to produce a 3-6
+      // word title even after a few BPE quirks. 64 tokens is well
+      // under our wall-clock budget and easily fits the longest
+      // sanitized title (8 words, ~80 chars).
+      maxOutputTokens: 64,
     });
     rawTitle = result.text;
     const usage = (result as { usage?: { outputTokens?: number } }).usage;

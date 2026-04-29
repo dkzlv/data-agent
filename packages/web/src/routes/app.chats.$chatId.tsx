@@ -1,6 +1,5 @@
-import { createFileRoute, Link } from "@tanstack/react-router";
+import { createFileRoute } from "@tanstack/react-router";
 import { useQuery } from "@tanstack/react-query";
-import { ChevronLeft } from "lucide-react";
 import { ChatRoom } from "~/components/ChatRoom";
 import { Skeleton } from "~/components/ui/skeleton";
 import { Alert, AlertDescription } from "~/components/ui/alert";
@@ -9,6 +8,12 @@ import { isSampleProfile } from "~/lib/sample-db";
 
 export const Route = createFileRoute("/app/chats/$chatId")({
   component: ChatDetail,
+  // Show the skeleton immediately on intent-preload / hydration so the
+  // user never sees a white flash while the chat data resolves. The
+  // earlier setup let the parent unmount before `useQuery` had even
+  // started, which manifested as a brief blank page on every nav from
+  // the chats list into a chat.
+  pendingComponent: ChatPageSkeleton,
 });
 
 function ChatDetail() {
@@ -36,16 +41,6 @@ function ChatDetail() {
 
   return (
     <div className="flex h-full flex-col gap-3">
-      <p className="px-1 text-xs">
-        <Link
-          to="/app"
-          className="inline-flex items-center gap-1 text-muted-foreground hover:text-foreground"
-        >
-          <ChevronLeft className="h-3 w-3" />
-          All chats
-        </Link>
-      </p>
-
       {chat.isLoading && <ChatPageSkeleton />}
 
       {chat.error && (
