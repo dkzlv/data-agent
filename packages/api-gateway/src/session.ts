@@ -41,7 +41,23 @@ export function requireSession(): MiddlewareHandler<{ Bindings: Env; Variables: 
 
     const dbUrl = await readSecret(c.env.CONTROL_PLANE_DB_URL);
     const { db, client } = createDbClient({ url: dbUrl });
-    c.executionCtx.waitUntil(client.end({ timeout: 1 }).catch(() => {}));
+    // Defer the connection close to a macrotask 5 s out — using
+    // `Promise.resolve().then(() => client.end())` (or .end with a 1ms
+    // timeout) closes on the very next microtask, **before** the
+    // synchronous queries inside this middleware (and `next()`!)
+    // have a chance to run. That manifests as
+    //   "Failed query: select tenant_id from tenant_member ..."
+    // because the postgres-js client tears down the underlying
+    // socket while drizzle is still mid-roundtrip. Same fix as the
+    // one applied in auth.ts.
+    c.executionCtx.waitUntil(
+      new Promise<void>((res) =>
+        setTimeout(() => {
+          client.end({ timeout: 1 }).catch(() => {});
+          res();
+        }, 5_000)
+      )
+    );
 
     const tenantId = await ensurePersonalTenant(c.env, db, {
       id: sessionResult.user.id,
