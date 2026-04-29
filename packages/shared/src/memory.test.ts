@@ -61,6 +61,17 @@ describe("validateMemoryContent", () => {
     expect(min.ok).toBe(true);
     expect(max.ok).toBe(true);
   });
+  it("accepts at MAX-1 and rejects at MAX+1 (post-bump to 2000 — task 996861)", () => {
+    // The bump from 500 → 2000 was driven by chat 5f2690a6: schema-
+    // shaped facts inherently want more room. Locking the boundary
+    // here so an accidental revert (or another bump) is loud.
+    expect(MEMORY_CONTENT_MAX).toBe(2000);
+    const justUnder = validateMemoryContent("x".repeat(1999));
+    const justOver = validateMemoryContent("x".repeat(2001));
+    expect(justUnder.ok).toBe(true);
+    expect(justOver.ok).toBe(false);
+    if (!justOver.ok) expect(justOver.reason).toMatch(/too long/);
+  });
   it("returns normalized + display alongside ok", () => {
     const r = validateMemoryContent("  Some  Fact   here  ");
     expect(r.ok).toBe(true);

@@ -41,6 +41,7 @@ import { ArtifactViewer, asArtifactRef } from "./ArtifactViewer";
 import { CodeBlock } from "./CodeBlock";
 import { MemoryChip, type WrittenFactSummary } from "./MemoryChip";
 import { MemoryRecalledStrip, type RecalledFactSummary } from "./MemoryRecalledStrip";
+import { MemoryRejectedChip, type RejectedSaveSummary } from "./MemoryRejectedChip";
 import { WorkspaceSidebar, WorkspaceSidebarBody, useChatArtifacts } from "./WorkspaceSidebar";
 import { AppMobileNavTrigger } from "~/routes/app";
 import { getChatHost } from "~/lib/chat-host";
@@ -231,6 +232,14 @@ export function ChatRoom({
     facts: RecalledFactSummary[];
   } | null>(null);
   const [recentWrites, setRecentWrites] = useState<WrittenFactSummary[]>([]);
+  // Server-emitted reject events (task 996861). Live-only, no replay
+  // — paired with `recentWrites` so the user sees both halves of
+  // every memory.remember loop. Capped at 5 chips per turn to defend
+  // against a misbehaving model spamming rejects (in practice it's
+  // bounded by the per-turn cap of 3 anyway, but the cap lets us
+  // also handle a flood of `args_not_object` rejects gracefully).
+  const REJECT_CHIPS_PER_TURN = 5;
+  const [recentRejects, setRecentRejects] = useState<RejectedSaveSummary[]>([]);
   const memberDirectory = useMemo(() => {
     const map = new Map<string, ChatMemberSummary>();
     for (const m of members) map.set(m.userId, m);
@@ -284,6 +293,26 @@ export function ChatRoom({
               score: typeof f.score === "number" ? f.score : 0,
             })),
           });
+        }
+        // Memory write reject (task 996861). Mirrors the
+        // `data_agent_memory_written` handler below but for the
+        // rejected counterpart — every reject path on the server
+        // (rate cap, content shape, missing scope, ...) emits one of
+        // these. We append until the per-turn cap, then drop the
+        // rest silently.
+        if (parsed.type === "data_agent_memory_write_rejected") {
+          const p = parsed as { reason?: unknown; kind?: unknown; contentChars?: unknown };
+          if (typeof p.reason === "string") {
+            const summary: RejectedSaveSummary = {
+              reason: p.reason,
+              kind: typeof p.kind === "string" ? p.kind : "(unknown)",
+              contentChars: typeof p.contentChars === "number" ? p.contentChars : -1,
+            };
+            setRecentRejects((prev) => {
+              if (prev.length >= REJECT_CHIPS_PER_TURN) return prev;
+              return [...prev, summary];
+            });
+          }
         }
         // Memory write: append to the running list so multi-save
         // turns surface every chip. Cleared when the user sends a
@@ -339,9 +368,11 @@ export function ChatRoom({
       const trimmed = text.trim();
       if (!trimmed) return;
       // Memory affordances are per-turn — clear the previous turn's
-      // recall strip and remembered chips so a new turn starts clean.
+      // recall strip and remembered/rejected chips so a new turn
+      // starts clean.
       setLatestRecall(null);
       setRecentWrites([]);
+      setRecentRejects([]);
       chat.sendMessage({
         role: "user",
         parts: [{ type: "text", text: trimmed }],
@@ -444,6 +475,7 @@ export function ChatRoom({
             isSampleDb={isSampleDb}
             recalledFacts={latestRecall?.facts ?? []}
             writtenFacts={recentWrites}
+            rejectedSaves={recentRejects}
           />
         ) : (
           <MessageListSkeleton />
@@ -593,6 +625,7 @@ function MessageList({
   isSampleDb,
   recalledFacts,
   writtenFacts,
+  rejectedSaves,
 }: {
   messages: UIMessage[];
   status: string;
@@ -605,6 +638,10 @@ function MessageList({
    *  3 enforced server-side. Cleared by the parent on each new
    *  user send. */
   writtenFacts: ReadonlyArray<WrittenFactSummary>;
+  /** Save attempts the server rejected this turn (task 996861).
+   *  Surfaces a warn chip so a silent-drop bug like the one
+   *  motivating the task is impossible to miss again. */
+  rejectedSaves: ReadonlyArray<RejectedSaveSummary>;
 }): React.ReactElement {
   const viewportRef = useRef<HTMLDivElement | null>(null);
   // "stickToBottom" autoscroll: as long as the user is scrolled to
@@ -682,13 +719,19 @@ function MessageList({
             <MessageBubble key={m.id} message={m} />
           ))}
           {/* Memory chips — one per remember call this turn, capped
-              by REMEMBER_CALLS_PER_TURN (=3) on the server. Rendered
-              after the assistant message so they read as "footer"
-              context, not as part of the answer. */}
-          {writtenFacts.length > 0 && (
+              by REMEMBER_CALLS_PER_TURN (=3) on the server. Rejects
+              ride alongside in the same row so the user sees both
+              halves of a memory.remember loop (e.g. "1 saved, 2
+              rejected: too long"). Rendered after the assistant
+              message so they read as "footer" context, not as part
+              of the answer. */}
+          {(writtenFacts.length > 0 || rejectedSaves.length > 0) && (
             <div className="flex flex-wrap gap-2">
               {writtenFacts.map((f) => (
                 <MemoryChip key={f.id} fact={f} />
+              ))}
+              {rejectedSaves.map((r, i) => (
+                <MemoryRejectedChip key={`reject-${i}`} rejected={r} />
               ))}
             </div>
           )}

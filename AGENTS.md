@@ -358,7 +358,8 @@ in the dashboard. Stable event names (so saved queries don't break):
 | `chat.title_summarize_failed` | chat-agent | model err / sanitize reject / race lost / persist err |
 | `chat.title_summarize_skipped` | chat-agent | trigger fired but didn't schedule (no_text / text_too_short / tenant_unresolved) |
 | `memory.recall` / `memory.recall_failed` | chat-agent | per-turn cross-chat memory recall (task a0e754) |
-| `memory.write` / `memory.write_failed` / `memory.forget` | chat-agent | `memory.remember` / `memory.forget` tool calls |
+| `memory.write_attempt` | chat-agent | every `memory.remember` entry, before validation (debug-level heartbeat — count attempts vs. successes to detect a model spamming a reject path) |
+| `memory.write` / `memory.write_failed` / `memory.forget` | chat-agent | `memory.remember` / `memory.forget` tool calls. `memory.write_failed` carries a `reason` code: `tenant_or_profile_missing` \| `per_turn_cap_reached` \| `args_not_object` \| `unknown_kind` \| `reserved_kind` \| `content_invalid` \| `embed_or_upsert_failed` |
 | `memory.embed` / `memory.embed_failed` | chat-agent | Workers AI bge-base-en-v1.5 embed heartbeat |
 | `memory.vectorize_query` / `memory.vectorize_upsert` / `memory.vectorize_delete` | chat-agent + api-gateway | Vectorize round-trips |
 | `memory.extract_start` / `memory.extract_complete` / `memory.extract_failed` / `memory.extract_skipped` | chat-agent | post-turn implicit fact extraction (llama-3.1-8b) |
@@ -388,8 +389,17 @@ Actions: `chat.create`, `chat.delete`, `chat.member.*`,
 `chat.title.auto`, `db_profile.create`, `db_profile.delete`,
 `chat.ws.connect`, `turn.start`, `turn.complete`, `turn.error`,
 `db.query`, `tool.<name>`, `artifact.read`,
-`memory.remember`, `memory.forget`, `memory.extracted`,
-`tool.memory_remember`, `tool.memory_forget`, `tool.memory_search`.
+`memory.remember`, `memory.remember_rejected`, `memory.forget`,
+`memory.extracted`, `tool.memory_remember`, `tool.memory_forget`,
+`tool.memory_search`.
+
+Every `memory.remember` reject path emits both a
+`memory.write_failed` Workers Logs event AND a
+`memory.remember_rejected` audit row (task 996861) — zero-write
+debugging is one SQL query away. The reject codes match the
+`reason` field on the log: `tenant_or_profile_missing`,
+`per_turn_cap_reached`, `args_not_object`, `unknown_kind`,
+`reserved_kind`, `content_invalid`, `embed_or_upsert_failed`.
 
 `audit_log` doubles as the rate-limit counter store
 (`turn.start` rows). Acceptable for alpha; post-alpha move to KV.
@@ -610,7 +620,8 @@ All in `packages/chat-agent/scripts/` unless noted. Run via
 | Script | Use |
 |--|--|
 | `inspect-turn.ts <chatId>` | Audit timeline + turnIds for a chat |
-| `debug-chat.ts <chatId>` | Dump full DO state (messages, presence, ctx) |
+| `debug-chat.ts <chatId>` | Dump full DO state (messages, presence, ctx); tool input/output truncated at 4000 chars |
+| `inspect-codemode.ts <chatId> [assistantIdx]` | Untruncated codemode call dump — input.code + parsed `{result, error}` envelope. Use when debug-chat.ts's 4k-char preview is still hiding the meaningful tail (task 996861) |
 | `debug-clear.ts <chatId>` | Wipe DO message history |
 | `debug-rate-limits.ts` | Inspect current rate-limit counts |
 | `spike.ts` | Minimal Think + codemode end-to-end probe |

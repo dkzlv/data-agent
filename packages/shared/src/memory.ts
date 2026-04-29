@@ -51,16 +51,32 @@ export const MEMORY_KIND_LABELS: Record<MemoryKind, string> = {
 };
 
 /**
- * Hard caps for model-supplied content. The model loves to ramble
- * ("I should remember that the user prefers ...") — anything over
- * 500 chars is almost certainly a re-statement of the conversation,
- * not a durable fact. Hard floor of 10 chars rejects "ok" / "yes"
- * style noise.
+ * Hard caps for model-supplied content. Hard floor of 10 chars
+ * rejects "ok" / "yes" style noise.
+ *
+ * The 2000-char ceiling (was 500 — task 996861) accommodates
+ * schema-shaped facts. A "schema_semantic" fact for a single table
+ * + column commentary + a couple of business rules trivially clears
+ * 500 chars; the earlier cap caused the entire `for (const f of
+ * candidates) memory.remember(f)` codemode loop to throw on the
+ * first fact and silently drop *all* of them (no audit row, no log,
+ * see chat 5f2690a6...). bge-base-en-v1.5 has a 512-token window,
+ * which translates to roughly 1500–2000 chars of normal English —
+ * the embed path (`MAX_EMBED_INPUT_CHARS = 1500` in
+ * `chat-agent/memory/embed.ts`) clips at 1500 anyway, so anything
+ * above that is stored verbatim in Postgres but indexed on the
+ * prefix only. That's fine for retrieval: schema/business facts
+ * carry their most discriminative signal in the first sentence
+ * (table name, key term).
+ *
+ * If you raise this further, also raise `MAX_EMBED_INPUT_CHARS`
+ * with eyes open — bge's 512-token ceiling is hard, so feeding it
+ * more bytes only burns Workers AI tokens for zero recall benefit.
  *
  * Enforced at write time in `memory.remember` and `persistFact`.
  */
 export const MEMORY_CONTENT_MIN = 10;
-export const MEMORY_CONTENT_MAX = 500;
+export const MEMORY_CONTENT_MAX = 2000;
 
 /**
  * Normalize content for hashing. Lowercase + collapsed whitespace
@@ -125,7 +141,7 @@ export function validateMemoryContent(raw: unknown): ValidateResult {
   if (display.length > MEMORY_CONTENT_MAX) {
     return {
       ok: false,
-      reason: `content is too long (${display.length} chars; maximum ${MEMORY_CONTENT_MAX}). Keep facts short and self-contained.`,
+      reason: `content is too long (${display.length} chars; maximum ${MEMORY_CONTENT_MAX}). Break it into multiple narrow facts (one concept per fact) instead of one mega-fact.`,
     };
   }
   return { ok: true, display, normalized };

@@ -99,9 +99,11 @@ declare const memory: {
    * Use this when the user tells you something that will matter on
    * later turns (or in later chats over the same DB) — schema
    * clarifications, business definitions, preferences, working
-   * query patterns. Keep facts SHORT (10-500 chars), self-contained,
-   * and de-contextualized — write them so a future you, with no
-   * memory of this chat, would understand them at a glance.
+   * query patterns. Keep facts FOCUSED (10-2000 chars; aim for one
+   * concept per fact, not a full schema dump — multiple narrow
+   * facts beat one mega-fact for retrieval), self-contained, and
+   * de-contextualized — write them so a future you, with no memory
+   * of this chat, would understand them at a glance.
    *
    * Don't save one-off requests ("show me top 10 customers"); save
    * the *general knowledge* you'd want to reuse ("'top customers'
@@ -172,37 +174,163 @@ declare const memory: {
 export function memoryTools(env: Env, host: MemoryToolHost): ToolProvider | null {
   if (!host.dbProfileId() || !host.tenantId()) return null;
 
+  /**
+   * Single point of departure for every `memory.remember` reject
+   * path (task 996861). Before this existed each reject was a bare
+   * `throw new Error(...)` — the codemode wrapper caught it, the
+   * model saw `{error, recoverable: true}`, and *nothing else*
+   * happened: no log, no audit row, no UI signal. Debugging the
+   * "0 facts saved despite a `for` loop calling remember" case
+   * (chat 5f2690a6) required reading the exact codemode `error`
+   * field, which `debug-chat.ts` was truncating at 300 chars.
+   *
+   * Now every reject:
+   *   1. Emits a `memory.write_failed` Workers Logs event with a
+   *      structured `reason` code (so saved searches can count
+   *      "rejected by content_invalid this week").
+   *   2. Writes a `memory.remember_rejected` audit row (best-effort
+   *      via waitUntil). Audit DB is the durable record — zero-
+   *      write debugging is one SQL query away.
+   *   3. Broadcasts `data_agent_memory_write_rejected` so the live
+   *      UI can render a one-line warn chip with a human reason.
+   *      Live-only by design (no replay) — same constraint as
+   *      MemoryChip.
+   *   4. Throws the same wire shape as before so the model still
+   *      sees the rejection and can adapt next turn.
+   */
+  // Explicit type annotation on the variable (not just the return
+  // type on the arrow) so TS narrows control flow at every call
+  // site — without it, `validated.display` and `args.kind` after a
+  // reject look like they could still be `unknown`/`null`.
+  const rejectRemember: (
+    reason: string,
+    code: string,
+    kind: string,
+    contentChars: number
+  ) => never = (reason, code, kind, contentChars): never => {
+    logEvent({
+      event: "memory.write_failed",
+      level: "warn",
+      reason: code,
+      kind,
+      contentChars,
+      tenantId: host.tenantId(),
+      dbProfileId: host.dbProfileId(),
+      chatId: host.chatId(),
+      turnId: host.turnId(),
+      message: reason,
+    });
+    // Audit + broadcast are both best-effort — neither should ever
+    // mask the original reject from the model.
+    try {
+      host.audit("memory.remember_rejected", null, {
+        reason: code,
+        kind,
+        contentChars,
+      });
+    } catch {
+      // host.audit already swallows internally; this catch handles
+      // the off-chance the host stub itself throws.
+    }
+    try {
+      host.broadcast(
+        JSON.stringify({
+          type: "data_agent_memory_write_rejected",
+          chatId: host.chatId(),
+          reason: code,
+          kind,
+          contentChars,
+        })
+      );
+    } catch {
+      // No live conns / serialization edge — the audit row is the
+      // durable record either way.
+    }
+    throw new Error(`memory.remember: ${reason}`);
+  };
+
   const remember = async (
     rawArgs: unknown
   ): Promise<{ id: string; kind: string; content: string }> => {
+    // Cheap entry-point heartbeat (task 996861). Counting attempts
+    // vs. successes in Workers Logs is the fastest way to detect a
+    // model that's spamming saves into a reject path. Also captures
+    // the kind+contentChars *before* validation so we can see what
+    // the model was trying to save even when it gets rejected.
+    const kindArg =
+      typeof (rawArgs as { kind?: unknown } | null)?.kind === "string"
+        ? (rawArgs as { kind: string }).kind
+        : "(non-string)";
+    const contentChars =
+      typeof (rawArgs as { content?: unknown } | null)?.content === "string"
+        ? (rawArgs as { content: string }).content.length
+        : -1;
+    logEvent({
+      event: "memory.write_attempt",
+      level: "debug",
+      chatId: host.chatId(),
+      turnId: host.turnId(),
+      kindArg,
+      contentChars,
+    });
+
     const tenantId = host.tenantId();
     const dbProfileId = host.dbProfileId();
     if (!tenantId || !dbProfileId) {
-      throw new Error("memory.remember: chat has no attached database");
+      rejectRemember(
+        "chat has no attached database",
+        "tenant_or_profile_missing",
+        kindArg,
+        contentChars
+      );
     }
     const used = host.bumpRememberCount();
     if (used > REMEMBER_CALLS_PER_TURN) {
-      throw new Error(
-        `memory.remember: per-turn cap reached (${REMEMBER_CALLS_PER_TURN} saves max). Save the most important facts only.`
+      rejectRemember(
+        `per-turn cap reached (${REMEMBER_CALLS_PER_TURN} saves max). Save the most important facts only.`,
+        "per_turn_cap_reached",
+        kindArg,
+        contentChars
       );
     }
 
     if (!rawArgs || typeof rawArgs !== "object") {
-      throw new Error("memory.remember({ kind, content, payload? }) — args object required");
+      rejectRemember(
+        "{ kind, content, payload? } — args object required",
+        "args_not_object",
+        kindArg,
+        contentChars
+      );
     }
     const args = rawArgs as { kind?: unknown; content?: unknown; payload?: unknown };
     if (!isMemoryKind(args.kind)) {
-      throw new Error(
-        `memory.remember: unknown kind "${String(args.kind)}". Allowed: schema_semantic | business_def | user_pref | query_pattern_good | query_pattern_bad | entity`
+      rejectRemember(
+        `unknown kind "${String(args.kind)}". Allowed: schema_semantic | business_def | user_pref | query_pattern_good | query_pattern_bad | entity`,
+        "unknown_kind",
+        kindArg,
+        contentChars
       );
     }
     if (args.kind === "chat_summary") {
       // chat_summary is reserved for the post-turn summarizer — the
       // model shouldn't manufacture them.
-      throw new Error("memory.remember: chat_summary is reserved for the system");
+      rejectRemember(
+        "chat_summary is reserved for the system",
+        "reserved_kind",
+        "chat_summary",
+        contentChars
+      );
     }
     const validated = validateMemoryContent(args.content);
-    if (!validated.ok) throw new Error(`memory.remember: ${validated.reason}`);
+    if (!validated.ok) {
+      rejectRemember(
+        validated.reason,
+        "content_invalid",
+        // narrowed by isMemoryKind above; rejectRemember above is `never`
+        args.kind as string,
+        contentChars
+      );
+    }
 
     const payload =
       args.payload && typeof args.payload === "object"
@@ -250,6 +378,12 @@ export function memoryTools(env: Env, host: MemoryToolHost): ToolProvider | null
           level: "warn",
           factId: persistResult.row.id,
           reason: "embed_or_upsert_failed",
+          kind: args.kind,
+          contentChars: validated.display.length,
+          tenantId,
+          dbProfileId,
+          chatId: host.chatId(),
+          turnId: host.turnId(),
           error: truncateMessage(err),
         });
         host.waitUntil(
@@ -307,10 +441,30 @@ export function memoryTools(env: Env, host: MemoryToolHost): ToolProvider | null
     };
   };
 
+  /**
+   * Lighter sibling of `rejectRemember` for forget/search (task
+   * 996861). The other reject paths in those two ops are user-input
+   * shaped (empty string etc.) and noisy — only the
+   * `tenant_or_profile_missing` case is interesting enough to log.
+   * No audit + no broadcast: the model rejection alone is enough,
+   * the audit row already exists for the tool call itself.
+   */
+  const logScopeMissing = (op: "forget" | "search"): void => {
+    logEvent({
+      event: "memory.write_failed",
+      level: "warn",
+      reason: "tenant_or_profile_missing",
+      op,
+      chatId: host.chatId(),
+      turnId: host.turnId(),
+    });
+  };
+
   const forget = async (rawIdOrContent: unknown): Promise<{ id: string; ok: true }> => {
     const tenantId = host.tenantId();
     const dbProfileId = host.dbProfileId();
     if (!tenantId || !dbProfileId) {
+      logScopeMissing("forget");
       throw new Error("memory.forget: chat has no attached database");
     }
     if (typeof rawIdOrContent !== "string" || !rawIdOrContent.trim()) {
@@ -353,6 +507,7 @@ export function memoryTools(env: Env, host: MemoryToolHost): ToolProvider | null
     const tenantId = host.tenantId();
     const dbProfileId = host.dbProfileId();
     if (!tenantId || !dbProfileId) {
+      logScopeMissing("search");
       throw new Error("memory.search: chat has no attached database");
     }
     if (typeof rawQuery !== "string" || !rawQuery.trim()) {

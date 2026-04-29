@@ -101,7 +101,7 @@ const MEMORY = `## Memory across chats
 
 The \`## Recalled facts\` block (when below) lists facts saved by past chats with this database. Treat them as ground truth and lean on them — don't re-derive what's already known.
 
-Use \`memory.remember(content, kind?)\` to save knowledge that will matter on later turns or in *future chats*: schema clarifications ("orders.total_cents is in cents not dollars"), business definitions ("MRR = sum(active_subscriptions.amount)"), entity mappings ("Acme = customer 1234"), preferences. Keep facts short (10–500 chars), self-contained, de-contextualized — write them so a future you, with no chat memory, would understand them at a glance. Save the *general knowledge*, not one-off requests. Use \`memory.forget(idOrContent)\` if the user corrects something. Use \`memory.search(query)\` for context the recalled-facts block didn't include.`;
+Use \`memory.remember(content, kind?)\` to save knowledge that will matter on later turns or in *future chats*: schema clarifications ("orders.total_cents is in cents not dollars"), business definitions ("MRR = sum(active_subscriptions.amount)"), entity mappings ("Acme = customer 1234"), preferences. Keep facts focused (10–2000 chars; aim for one concept per fact, not a full schema dump — multiple narrow facts beat one mega-fact for retrieval), self-contained, de-contextualized — write them so a future you, with no chat memory, would understand them at a glance. Save the *general knowledge*, not one-off requests. Use \`memory.forget(idOrContent)\` if the user corrects something. Use \`memory.search(query)\` for context the recalled-facts block didn't include.`;
 
 const SAFETY = `## Safety
 
@@ -159,9 +159,7 @@ export function buildSystemPrompt(ctx?: ChatContext): string {
   // wrote them on a turn when memory was wired), and the recall
   // block is self-explanatory enough to be useful on its own.
   const memorySection = ctx?.memoryEnabled ? MEMORY : "";
-  return [HEADER, APPROACH, memorySection, SAFETY, ctxBlock, recalled]
-    .filter(Boolean)
-    .join("\n\n");
+  return [HEADER, APPROACH, memorySection, SAFETY, ctxBlock, recalled].filter(Boolean).join("\n\n");
 }
 
 /** @internal — exported for tests; do not call from runtime code. */
