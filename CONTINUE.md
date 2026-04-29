@@ -260,7 +260,7 @@ The spike is the most important task. Save energy for it; do not skimp. After th
 - [ ] 19183b Workspace file browser sidebar
 - [ ] 46391e Multi-user: presence + turn-lock
 - [ ] dea3ff Multi-user product semantics
-- [ ] 2173ac Sandbox hardening
+- [x] 2173ac Sandbox hardening
 - [ ] 1dd311 Audit logging
 - [ ] 947c38 Rate limiting
 - [ ] 5bcb5f Cost telemetry

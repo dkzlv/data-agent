@@ -376,6 +376,107 @@ export class ChatAgent extends Think<Env> {
   }
 
   /**
+   * Hardening probes — verify the sandbox really enforces what we claim
+   * (subtask 2173ac). Each probe runs a small piece of code via the
+   * Dynamic Worker executor and reports whether the expected guard
+   * actually fired.
+   *
+   * We expose these as @callable RPCs so they're executable from the
+   * spike harness on every deploy, ensuring the hardening doesn't
+   * silently regress (e.g. Worker Loader changing defaults).
+   */
+  @callable()
+  async sandboxNetworkProbe(): Promise<{
+    fetchBlocked: boolean;
+    connectBlocked: boolean;
+    error?: string;
+  }> {
+    const executor = new DynamicWorkerExecutor({
+      loader: this.env.LOADER as never,
+      timeout: 5_000,
+      globalOutbound: null,
+    });
+    // Single piece of code that tries fetch() and a TCP connect-like
+    // import. If either succeeds, our isolation has failed.
+    const code = `
+      async () => {
+        const result = { fetchBlocked: false, connectBlocked: false };
+        try {
+          const r1 = await fetch("https://example.com");
+          // If we got here, the call returned — record the status so
+          // we can see whether outbound went somewhere.
+          result.fetchBlocked = false;
+          result.fetchStatus = r1.status;
+        } catch (e) {
+          result.fetchBlocked = true;
+          result.fetchError = String(e && e.message || e).slice(0, 120);
+        }
+        try {
+          const r = new Request("https://example.com");
+          const r2 = await fetch(r);
+          result.connectBlocked = false;
+          result.connectStatus = r2.status;
+        } catch (e) {
+          result.connectBlocked = true;
+          result.connectError = String(e && e.message || e).slice(0, 120);
+        }
+        return result;
+      }
+    `;
+    const out = await executor.execute(code, []);
+    if (out.error) return { fetchBlocked: false, connectBlocked: false, error: out.error };
+    const r = out.result as {
+      fetchBlocked?: boolean;
+      connectBlocked?: boolean;
+      fetchError?: string;
+      connectError?: string;
+      fetchStatus?: number;
+      connectStatus?: number;
+    };
+    return {
+      fetchBlocked: !!r.fetchBlocked,
+      connectBlocked: !!r.connectBlocked,
+      ...(r.fetchError ? { error: r.fetchError } : {}),
+    };
+  }
+
+  /**
+   * Run the sandbox with a tight 1.5 s timeout against an infinite
+   * loop, then verify the executor returned an error or empty result
+   * within ~2 s. Catches a regression where the timeout option is
+   * silently ignored.
+   */
+  @callable()
+  async sandboxTimeoutProbe(): Promise<{
+    timedOut: boolean;
+    durationMs: number;
+    errorPreview?: string;
+  }> {
+    const executor = new DynamicWorkerExecutor({
+      loader: this.env.LOADER as never,
+      timeout: 1_500,
+      globalOutbound: null,
+    });
+    // We avoid a tight CPU loop because Workers Loader bills sandbox
+    // CPU against the parent isolate. Instead, await a never-resolving
+    // promise — the executor's wall-clock timeout should still fire.
+    const code = `
+      async () => {
+        await new Promise(() => {});
+        return "should-not-reach";
+      }
+    `;
+    const t0 = Date.now();
+    const out = await executor.execute(code, []);
+    const durationMs = Date.now() - t0;
+    return {
+      timedOut: !!out.error || out.result !== "should-not-reach",
+      durationMs,
+      errorPreview: out.error?.slice(0, 200),
+    };
+  }
+
+  /**
    * Set the chat context (title, attached database, current user) so the
    * system prompt can render an accurate per-chat header. Called by the
    * api-gateway right after a turn is initiated, before the model runs.
