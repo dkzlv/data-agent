@@ -9,6 +9,13 @@ export interface Env {
   API_URL: string;
   /** Optional override for the LLM. Set in wrangler vars or .dev.vars. */
   CHAT_MODEL?: string;
+  /**
+   * Cloudflare AI Gateway id to route Workers AI calls through. When
+   * unset, calls go direct to Workers AI (no gateway dashboard, no
+   * caching, no per-request cost telemetry). Set to e.g. `data-agent`
+   * in wrangler.jsonc for production; leave unset in local dev.
+   */
+  AI_GATEWAY_ID?: string;
 
   // Secrets
   CONTROL_PLANE_DB_URL: SecretBinding;

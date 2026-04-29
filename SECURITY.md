@@ -176,8 +176,11 @@ the silent-drop behavior, not the secrecy of the list.
 | SQL rows                     | 5,000                  | `LIMIT N+1`                         |
 | SQL bytes                    | 4 MiB                  | `db.query` byte-counting            |
 | Turns/chat/day               | 50                     | `947c38` rate limiter (subtask)     |
+| Turns/user/hour              | 20                     | `947c38` rate limiter (subtask)     |
+| Turns/tenant/day             | 200                    | `947c38` rate limiter (subtask)     |
 | Output tokens/turn           | 8,192                  | Workers AI request param            |
 | Tool-call depth/turn         | 3                      | `messageConcurrency: queue` + cap   |
+| LLM $-budget per tenant      | (configurable)         | CF AI Gateway dashboard (`5bcb5f`)  |
 | Chat token TTL               | 5 min                  | `mintChatToken`                     |
 | DB-profile creds at rest     | AES-GCM (per-tenant)   | `f0a0e9` envelope encryption        |
 

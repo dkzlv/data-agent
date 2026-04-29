@@ -95,7 +95,37 @@ export class ChatAgent extends Think<Env> {
       | "@cf/moonshotai/kimi-k2.6"
       | "@cf/zai-org/glm-4.7-flash"
       | "@cf/openai/gpt-oss-120b";
+    // Stamp for the audit row built later (see onChatResponse).
+    this._modelId = modelId;
+
     const workersai = createWorkersAI({ binding: this.env.AI });
+
+    // CF AI Gateway (5bcb5f) — when `AI_GATEWAY_ID` is set, every
+    // inference call is proxied through the named gateway. The
+    // gateway dashboard provides cost tracking, request logs,
+    // caching, and replay; in return we attach metadata so the
+    // dashboard can slice usage per tenant/chat/user. Skipped in
+    // local dev where the binding may not have gateway access yet.
+    const gatewayId = this.env.AI_GATEWAY_ID;
+    const ctx = this._cachedChatContext;
+    const gateway = gatewayId
+      ? {
+          id: gatewayId,
+          metadata: {
+            tenantId: ctx?.tenantId ?? "unknown",
+            chatId: this.name,
+            userId: this._currentTurnUserId ?? "unknown",
+            model: modelId,
+          },
+          // No client-side cache. SQL-introspection prompts include
+          // tenant-specific schema hashes which already de-dupe
+          // identical workloads at the *prompt* level; CF's content
+          // hash takes care of the rest. We could opt-in
+          // `cacheTtl: 600` later if cost dictates, but caching
+          // analytical answers is risky (data drifts).
+        }
+      : undefined;
+
     // sessionAffinity uses the DO id (globally unique, stable for the
     // lifetime of this chat) so all turns from this chat hit the same
     // replica — improves Workers AI KV-prefix-cache hit rate.
@@ -106,6 +136,7 @@ export class ChatAgent extends Think<Env> {
         enable_thinking: true,
         clear_thinking: false,
       },
+      ...(gateway ? { gateway } : {}),
     });
   }
 
@@ -194,16 +225,96 @@ export class ChatAgent extends Think<Env> {
   }
 
   /**
-   * Audit hook (1dd311) — fired by Think after the model finishes a
-   * turn. We log token usage so cost-telemetry (subtask 5bcb5f) has a
-   * source of truth. Best-effort.
+   * Cost telemetry (5bcb5f) — we route every Workers AI call through
+   * **Cloudflare AI Gateway** (`AI_GATEWAY_ID`, default `data-agent`).
+   * The gateway dashboard owns:
+   *   - per-model pricing (no hand-maintained tables)
+   *   - per-request cost aggregation
+   *   - prompt/response logs + replay
+   *   - cache hit/miss accounting (we set `cf-aig-metadata` so the
+   *     dashboard can slice cost per tenant/chat/user)
+   *
+   * What we still keep on our side is the **token totals per turn**:
+   * (a) cheap to record, (b) gives forensics if the gateway log ever
+   * disappears, and (c) lets us correlate audit rows with a specific
+   * turn without round-tripping the gateway logs API. We deliberately
+   * do **not** compute $-cost ourselves anymore — that was a
+   * maintenance burden and double-source-of-truth for nothing.
+   */
+  private _currentTurnTokens: {
+    inputTokens: number;
+    outputTokens: number;
+    totalTokens: number;
+    reasoningTokens: number;
+    cachedInputTokens: number;
+    steps: number;
+  } = this._zeroTokens();
+
+  private _zeroTokens(): {
+    inputTokens: number;
+    outputTokens: number;
+    totalTokens: number;
+    reasoningTokens: number;
+    cachedInputTokens: number;
+    steps: number;
+  } {
+    return {
+      inputTokens: 0,
+      outputTokens: 0,
+      totalTokens: 0,
+      reasoningTokens: 0,
+      cachedInputTokens: 0,
+      steps: 0,
+    };
+  }
+
+  /**
+   * Per-step usage capture. Think (via the AI SDK) fires `onStepFinish`
+   * after each LLM step with a `usage` object whose exact field names
+   * vary by provider. Workers AI exposes
+   * `{ inputTokens, outputTokens, totalTokens, reasoningTokens?,
+   *    cachedInputTokens? }`. We only sum what we got — missing
+   * fields stay at 0 — so a provider that returns nothing produces a
+   * harmless all-zero row instead of a NaN-poisoned one.
+   */
+  override async onStepFinish(ctx: { usage?: unknown }): Promise<void> {
+    const u = ctx?.usage as
+      | {
+          inputTokens?: number;
+          outputTokens?: number;
+          totalTokens?: number;
+          reasoningTokens?: number;
+          cachedInputTokens?: number;
+        }
+      | undefined;
+    if (!u) return;
+    const t = this._currentTurnTokens;
+    t.inputTokens += u.inputTokens ?? 0;
+    t.outputTokens += u.outputTokens ?? 0;
+    t.totalTokens += u.totalTokens ?? (u.inputTokens ?? 0) + (u.outputTokens ?? 0);
+    t.reasoningTokens += u.reasoningTokens ?? 0;
+    t.cachedInputTokens += u.cachedInputTokens ?? 0;
+    t.steps += 1;
+  }
+
+  /**
+   * Audit hook (1dd311 + 5bcb5f) — fired by Think after the model
+   * finishes a turn. Persists the accumulated token usage for the
+   * `turn.complete` audit row, then resets the counter so the next
+   * turn starts clean. Best-effort: a failed audit write must not
+   * block the user's response.
+   *
+   * The audit `payload.gateway` field carries `{ id, model }` — when
+   * combined with the timestamp this is enough to deep-link an audit
+   * row into the Cloudflare AI Gateway logs view.
    */
   override async onChatResponse(result: ChatResponseResult): Promise<void> {
     const tenantId = this._cachedChatContext?.tenantId;
+    const tokens = { ...this._currentTurnTokens };
+    // Reset BEFORE the await — next turn could start before the audit
+    // insert completes, and we don't want carryover.
+    this._currentTurnTokens = this._zeroTokens();
     if (!tenantId) return;
-    // Pull whatever usage info Think exposes — shape varies between
-    // providers, so just persist the whole `usage` object as-is.
-    const usage = (result as unknown as { usage?: unknown }).usage ?? null;
     this.ctx.waitUntil(
       auditFromAgent(this.env, {
         tenantId,
@@ -211,10 +322,25 @@ export class ChatAgent extends Think<Env> {
         userId: this._currentTurnUserId ?? null,
         action: "turn.complete",
         target: this.name,
-        payload: { usage },
+        payload: {
+          status: result.status,
+          tokens,
+          gateway: {
+            id: this.env.AI_GATEWAY_ID ?? null,
+            model: this._modelId,
+          },
+        },
       })
     );
   }
+
+  /**
+   * Model id this DO is currently running, for cost attribution and
+   * gateway-log linking. Defaults to `DEFAULT_MODEL`; `getModel()`
+   * updates it before each turn so the value is always current
+   * relative to the most recent inference.
+   */
+  private _modelId: string = DEFAULT_MODEL;
 
   /** Audit hook (1dd311) — turn errored. */
   override onChatError(error: unknown): unknown {

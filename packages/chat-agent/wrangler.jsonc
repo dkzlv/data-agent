@@ -12,7 +12,9 @@
 
   "vars": {
     "APP_URL": "https://app.data-agent.dkzlv.com",
-    "API_URL": "https://api.data-agent.dkzlv.com"
+    "API_URL": "https://api.data-agent.dkzlv.com",
+    // Route Workers AI through CF AI Gateway for cost/log/cache (5bcb5f).
+    "AI_GATEWAY_ID": "data-agent"
   },
 
   "ai": {
