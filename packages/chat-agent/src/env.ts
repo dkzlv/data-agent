@@ -18,9 +18,9 @@ export interface Env {
   AI_GATEWAY_ID?: string;
   /**
    * CF account id — needed to construct the AI Gateway base URL for
-   * external providers (Anthropic). The gateway URL is
-   * `https://gateway.ai.cloudflare.com/v1/{accountId}/{gatewayId}/anthropic`,
-   * which the @ai-sdk/anthropic provider hits as `baseURL`. Set in
+   * external providers. The gateway URL is
+   * `https://gateway.ai.cloudflare.com/v1/{accountId}/{gatewayId}/compat`,
+   * which the @ai-sdk/openai provider hits as `baseURL`. Set in
    * wrangler vars; mirrors the worker's `account_id`.
    */
   CF_ACCOUNT_ID?: string;

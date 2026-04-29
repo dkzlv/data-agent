@@ -137,9 +137,16 @@ export function buildAgentTools(inputs: BuildAgentToolsInputs): ToolSet {
 
   // Attach Anthropic prompt-cache breakpoint to the (only) tool
   // entry. AI SDK forwards `Tool.providerOptions.anthropic` to
-  // Anthropic's tool definition `cache_control` field; the gateway
-  // path (native `/anthropic` endpoint) preserves it. With a single
-  // tool the breakpoint sits on the last tool by definition.
+  // Anthropic's tool definition `cache_control` field; the native
+  // `/anthropic` gateway endpoint preserves it. With a single tool
+  // the breakpoint sits on the last tool by definition.
+  //
+  // NOTE: production currently routes through the gateway's
+  // `/compat/chat/completions` (OpenAI-shaped) endpoint, which
+  // STRIPS `cache_control`. This option is therefore a no-op today
+  // — kept in place so when we re-enable the native Anthropic
+  // endpoint (after fixing the CF_AIG_TOKEN auth scoping that
+  // broke prod on PR #12), caching turns on automatically.
   //
   // Workers AI / openai-compat paths ignore unknown providerOptions
   // keys, so this is safe to set unconditionally.
