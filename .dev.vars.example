@@ -1,0 +1,20 @@
+# Local dev secrets template. Copy to packages/<pkg>/.dev.vars per worker that needs them.
+# NEVER commit a real .dev.vars file.
+
+# Control-plane Postgres (Neon)
+CONTROL_PLANE_DB_URL="postgresql://user:pass@host/db?sslmode=require"
+
+# Better Auth session signing
+BETTER_AUTH_SECRET="<32 random bytes base64>"
+
+# Internal JWT (api-gateway → ChatAgent)
+INTERNAL_JWT_SIGNING_KEY="<32 random bytes base64>"
+
+# Customer DB credential envelope encryption master key
+MASTER_ENCRYPTION_KEY="<32 random bytes base64>"
+
+# Cloudflare account
+CF_ACCOUNT_ID="2f7029a7ef2671db090d9304f595c42d"
+
+# Optional: scoped token for Email Sending API + admin tasks (only needed if not using a Worker binding)
+CF_API_TOKEN=""

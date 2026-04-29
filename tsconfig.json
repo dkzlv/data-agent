@@ -1,0 +1,10 @@
+{
+  "files": [],
+  "references": [
+    { "path": "./packages/shared" },
+    { "path": "./packages/db" },
+    { "path": "./packages/api-gateway" },
+    { "path": "./packages/chat-agent" },
+    { "path": "./packages/web" }
+  ]
+}

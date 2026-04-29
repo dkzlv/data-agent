@@ -1,0 +1,18 @@
+{
+  "name": "@data-agent/web",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "main": "./src/index.ts",
+  "scripts": {
+    "build": "tsc --build",
+    "dev": "echo 'web dev script wired in fde638'",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@data-agent/shared": "workspace:*"
+  },
+  "devDependencies": {
+    "typescript": "^5.9.0"
+  }
+}

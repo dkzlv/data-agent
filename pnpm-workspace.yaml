@@ -1,0 +1,9 @@
+packages:
+  - "packages/*"
+
+onlyBuiltDependencies:
+  - esbuild
+  - lefthook
+  - sharp
+  - workerd
+

@@ -1,0 +1,14 @@
+pre-commit:
+  parallel: true
+  commands:
+    format:
+      glob: "*.{ts,tsx,js,jsx,json,jsonc,md}"
+      run: pnpm exec biome format --write {staged_files} && git add {staged_files}
+    lint:
+      glob: "*.{ts,tsx,js,jsx}"
+      run: pnpm exec oxlint {staged_files}
+
+pre-push:
+  commands:
+    typecheck:
+      run: pnpm typecheck

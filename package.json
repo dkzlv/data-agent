@@ -1,13 +1,29 @@
 {
   "name": "data-agent",
-  "version": "1.0.0",
-  "description": "",
-  "main": "index.js",
-  "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
+  "version": "0.0.0",
+  "private": true,
+  "description": "BI agent on Cloudflare. BYO Postgres, NL → SQL → chart, multi-user chats.",
+  "type": "module",
+  "engines": {
+    "node": ">=22"
   },
-  "keywords": [],
-  "author": "",
-  "license": "ISC",
-  "packageManager": "pnpm@10.24.0"
+  "packageManager": "pnpm@10.24.0",
+  "scripts": {
+    "build": "pnpm -r --parallel build",
+    "dev": "pnpm -r --parallel dev",
+    "typecheck": "tsc --build",
+    "typecheck:watch": "tsc --build --watch",
+    "lint": "oxlint .",
+    "format": "biome format --write .",
+    "format:check": "biome format .",
+    "test": "pnpm -r --parallel test",
+    "clean": "tsc --build --clean && rimraf '**/dist' '**/.wrangler' '**/.tsbuildinfo'"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "^2.2.0",
+    "lefthook": "^1.13.0",
+    "oxlint": "^1.20.0",
+    "rimraf": "^6.0.1",
+    "typescript": "^5.9.0"
+  }
 }
