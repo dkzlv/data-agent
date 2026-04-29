@@ -27,6 +27,14 @@ import type { Env } from "../env";
  * 1500 chars covers virtually any reasonable user message and stays
  * well below the model's truncation point. Beyond that we'd be
  * embedding noise.
+ *
+ * Intentionally below `MEMORY_CONTENT_MAX` (2000, task 996861).
+ * bge's 512-token window can't see beyond ~1500 chars anyway, and
+ * the prefix carries the most discriminative signal for
+ * schema/business facts. We accept that long facts are
+ * "indexed on prefix" — Postgres still has the full content for
+ * display + hydration; only the vector neighborhood uses the
+ * truncated form.
  */
 const MAX_EMBED_INPUT_CHARS = 1500;
 

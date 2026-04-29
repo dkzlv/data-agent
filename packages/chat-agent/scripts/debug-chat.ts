@@ -93,22 +93,31 @@ try {
           output?: unknown;
           errorText?: string;
         };
+        // Truncation budget bumped 300/500 → 4000 (task 996861).
+        // The earlier 300-char cap on input/output hid the codemode
+        // `{error}` envelope on chat 5f2690a6 — the visible prefix
+        // was the user's `async () =>` boilerplate; the meaningful
+        // reject string lived past char 300. 4000 chars is plenty
+        // for almost any codemode body and still small enough that
+        // the dump comfortably fits in a terminal scrollback.
+        // For genuinely-long bodies, use `inspect-codemode.ts`
+        // (fully untruncated; same RPC).
         console.log(
           `  part type=${part.type}`,
           JSON.stringify({
-            text: part.text?.slice(0, 500),
+            text: part.text?.slice(0, 4000),
             toolName: part.toolName,
             state: part.state,
-            input: part.input ? JSON.stringify(part.input).slice(0, 300) : undefined,
-            output: part.output ? JSON.stringify(part.output).slice(0, 300) : undefined,
-            errorText: part.errorText?.slice(0, 500),
+            input: part.input ? JSON.stringify(part.input).slice(0, 4000) : undefined,
+            output: part.output ? JSON.stringify(part.output).slice(0, 4000) : undefined,
+            errorText: part.errorText?.slice(0, 4000),
           })
         );
       }
     } else if (msg.content) {
-      console.log(" ", msg.content.slice(0, 500));
+      console.log(" ", msg.content.slice(0, 4000));
     } else {
-      console.log("  (no parts/content)", JSON.stringify(msg).slice(0, 500));
+      console.log("  (no parts/content)", JSON.stringify(msg).slice(0, 4000));
     }
   }
 } finally {
