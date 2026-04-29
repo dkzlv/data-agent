@@ -204,7 +204,7 @@ export function createAuth(env: Env) {
 - [x] a636fe Provision Cloudflare account
 - [x] 93f695 Pick + provision control-plane DB
 - [x] 3c8c0b Scaffold api-gateway Worker
-- [ ] 616db2 Scaffold ChatAgent DO
+- [x] 616db2 Scaffold ChatAgent DO
 - [ ] fde638 Scaffold web app
 - [ ] 6c7414 Better Auth in control-plane
 - [ ] 5d7e7d Wire web app to Better Auth

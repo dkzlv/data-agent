@@ -14,3 +14,7 @@ build
 coverage
 .vitest
 *.tsbuildinfo
+
+# TanStack Router writes this on dev/build but it's fine to commit it
+# (faster cold-start, deterministic builds). Leaving uncommented note.
+!routeTree.gen.ts

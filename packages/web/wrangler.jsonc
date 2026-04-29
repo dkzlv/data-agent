@@ -1,0 +1,20 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "data-agent-web",
+  "main": "@tanstack/react-start/server-entry",
+  "compatibility_date": "2026-04-29",
+  "compatibility_flags": ["nodejs_compat"],
+  "account_id": "2f7029a7ef2671db090d9304f595c42d",
+
+  "observability": {
+    "enabled": true
+  },
+
+  "vars": {
+    "API_URL": "https://api.data-agent.dkzlv.com",
+    "APP_URL": "https://app.data-agent.dkzlv.com"
+  }
+
+  // Routes wired at first deploy:
+  //   "routes": [{ "pattern": "app.data-agent.dkzlv.com/*", "custom_domain": true }]
+}
