@@ -1259,16 +1259,13 @@ export class ChatAgent extends Think<Env> {
     const startedAt = Date.now();
     try {
       const workersai = createWorkersAI({ binding: this.env.AI });
-      const modelId = (this.env.CHAT_MODEL ?? DEFAULT_MODEL) as
-        | "@cf/moonshotai/kimi-k2.6"
-        | "@cf/zai-org/glm-4.7-flash"
-        | "@cf/openai/gpt-oss-120b";
-      const model = workersai(modelId, {
-        // Mirror the production title call exactly — the whole point
-        // is to verify these flags actually disable thinking.
-        chat_template_kwargs: { enable_thinking: false, clear_thinking: true },
-        reasoning_effort: "low",
-      });
+      // Mirror production: title-summarizer routes to a fixed
+      // non-thinking model (llama-3.1-8b) because Kimi K2.6's binding
+      // ignored enable_thinking:false and burned the entire output
+      // budget on reasoning. The probe needs to verify the SAME path
+      // production uses, otherwise it'd happily pass while real
+      // titles silently fail.
+      const model = workersai("@cf/meta/llama-3.1-8b-instruct");
       const result = await generateText({
         model,
         system: TITLE_SUMMARY_SYSTEM_PROMPT,

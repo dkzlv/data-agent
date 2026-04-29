@@ -30,6 +30,30 @@ import { auditFromAgent } from "./audit";
 import { readSecret, type Env } from "./env";
 
 /**
+ * Title-call model override (task 0cc87b, fallback step 1B).
+ *
+ * We tried to keep the title call on the same model the chat itself
+ * uses, but Kimi K2.6's Workers AI binding ignores
+ * `chat_template_kwargs.enable_thinking: false` — the spike
+ * (`scripts/spike-title.ts`) returned outputChars=0,
+ * reasoningChars=241, all 64 output tokens consumed by reasoning
+ * before any visible title text. Empty raw → sanitize_rejected →
+ * chat list stayed at "New chat".
+ *
+ * Overriding to a small non-thinking llama gives us:
+ *   - deterministic visible-text output (no reasoning surface)
+ *   - cheaper than running the chat model for a 3-6 word task
+ *   - decoupled from chat-model swaps (gpt-oss / kimi / glm) so a
+ *     future model change doesn't silently break titles
+ *
+ * This means the AI-Gateway metadata `model` field on the title call
+ * intentionally diverges from `opts.modelId` (the chat model) — the
+ * `kind: "title-summary"` label still buckets these correctly in the
+ * gateway dashboard.
+ */
+const TITLE_MODEL_OVERRIDE = "@cf/meta/llama-3.1-8b-instruct" as const;
+
+/**
  * System prompt — exported for tests so we can lock in the literal
  * (small change here = noticeable shift in title quality).
  */
@@ -179,7 +203,11 @@ export async function summarizeAndPersistTitle(env: Env, opts: SummarizeOpts): P
             tenantId: opts.tenantId,
             chatId: opts.chatId,
             userId: opts.userId ?? "unknown",
-            model: opts.modelId,
+            // Records the model we ACTUALLY called (override), not
+            // the chat model. Chat model is still observable via the
+            // `kind: title-summary` filter + the `chat.title_*` log
+            // events which carry `opts.modelId`.
+            model: TITLE_MODEL_OVERRIDE,
             // Bucket title-summary calls separately from main chat
             // turns so AI-Gateway dashboards can split the cost.
             kind: "title-summary",
@@ -187,26 +215,10 @@ export async function summarizeAndPersistTitle(env: Env, opts: SummarizeOpts): P
         }
       : undefined;
 
-    const model = workersai(
-      opts.modelId as
-        | "@cf/moonshotai/kimi-k2.6"
-        | "@cf/zai-org/glm-4.7-flash"
-        | "@cf/openai/gpt-oss-120b",
-      {
-        // Force-disable thinking for the title call. Kimi K2.6's
-        // binding default emits reasoning tokens that eat
-        // maxOutputTokens before any visible text — empirically
-        // observed as result.text === "" → sanitize_rejected (chat
-        // 43b2e44d). `clear_thinking: true` belt-and-braces for
-        // bindings that retain thinking state across calls. No-op on
-        // non-thinking models.
-        chat_template_kwargs: { enable_thinking: false, clear_thinking: true },
-        // Belt+braces for reasoning-capable models (gpt-oss). No-op on
-        // models that don't honor it.
-        reasoning_effort: "low",
-        ...(gateway ? { gateway } : {}),
-      }
-    );
+    // Override: see TITLE_MODEL_OVERRIDE doc — Kimi K2.6 binding
+    // ignores enable_thinking:false, so we route titles to a small
+    // non-thinking model regardless of the chat model.
+    const model = workersai(TITLE_MODEL_OVERRIDE, gateway ? { gateway } : {});
 
     const result = await generateText({
       model,
