@@ -142,6 +142,10 @@ async function seedSampleDbProfile(
   userId: string
 ): Promise<void> {
   const id = crypto.randomUUID();
+  // The web frontend matches by this exact string to detect "this is
+  // the demo DB" and render the welcome flow / prompt chips. If you
+  // rename it, also update `SAMPLE_DB_NAME` in
+  // `packages/web/src/lib/sample-db.ts` — there's no shared source.
   const SAMPLE = {
     name: "Sample: Neon employees DB",
     host: "ep-frosty-thunder-anxk37z3-pooler.c-6.us-east-1.aws.neon.tech",

@@ -34,6 +34,7 @@ import { Alert, AlertDescription, AlertTitle } from "~/components/ui/alert";
 import { Badge } from "~/components/ui/badge";
 import { Sheet, SheetContent, SheetHeader, SheetTitle, SheetTrigger } from "~/components/ui/sheet";
 import { Tooltip, TooltipContent, TooltipTrigger } from "~/components/ui/tooltip";
+import { EMPLOYEES_DEMO_PROMPTS } from "~/lib/sample-db";
 import { cn } from "~/lib/utils";
 
 export interface ChatMemberSummary {
@@ -49,9 +50,22 @@ interface ChatRoomProps {
   title?: string;
   /** Members of this chat — used to render presence display names. */
   members?: ChatMemberSummary[];
+  /**
+   * True when this chat is attached to the auto-seeded sample DB.
+   * Renders demo prompt chips above the composer (only while there
+   * are no messages yet) and tweaks the empty-state copy. Caller
+   * resolves this from the chat's `dbProfileId` so ChatRoom stays
+   * decoupled from the db-profiles fetch.
+   */
+  isSampleDb?: boolean;
 }
 
-export function ChatRoom({ chatId, title, members = [] }: ChatRoomProps): React.ReactElement {
+export function ChatRoom({
+  chatId,
+  title,
+  members = [],
+  isSampleDb = false,
+}: ChatRoomProps): React.ReactElement {
   const host = useMemo(() => getChatHost(), []);
   const basePath = `api/chats/${encodeURIComponent(chatId)}/ws`;
   const qc = useQueryClient();
@@ -209,6 +223,29 @@ export function ChatRoom({ chatId, title, members = [] }: ChatRoomProps): React.
 
   const displayedTitle = liveTitle ?? title;
 
+  // Stable send callback shared by the composer and demo-suggestion
+  // chips. Both surfaces want exactly the same behavior: trim, drop
+  // empties, fire as a user message. Centralizing it keeps the two
+  // entry points consistent (and means future logging / optimistic
+  // UI lives in one place).
+  const handleSend = useCallback(
+    (text: string) => {
+      const trimmed = text.trim();
+      if (!trimmed) return;
+      chat.sendMessage({
+        role: "user",
+        parts: [{ type: "text", text: trimmed }],
+      });
+    },
+    [chat]
+  );
+
+  const composerDisabled = !isReady || chat.status === "streaming" || chat.status === "submitted";
+  // Chips show only on a fresh sample-DB chat. They disappear the
+  // moment the first message lands (whether sent via chip or typed)
+  // because `chat.messages.length` becomes > 0.
+  const showDemoSuggestions = isSampleDb && isReady && chat.messages.length === 0;
+
   return (
     <div className="flex h-[calc(100dvh-7rem)] flex-col gap-3">
       {displayedTitle ? (
@@ -231,24 +268,57 @@ export function ChatRoom({ chatId, title, members = [] }: ChatRoomProps): React.
               messages={chat.messages as UIMessage[]}
               status={chat.status}
               error={chat.error}
+              isSampleDb={isSampleDb}
             />
           ) : (
             <MessageListSkeleton />
           )}
 
-          <Composer
-            disabled={!isReady || chat.status === "streaming" || chat.status === "submitted"}
-            onSubmit={(text) => {
-              chat.sendMessage({
-                role: "user",
-                parts: [{ type: "text", text }],
-              });
-            }}
-          />
+          {showDemoSuggestions && (
+            <DemoSuggestions
+              prompts={EMPLOYEES_DEMO_PROMPTS}
+              disabled={composerDisabled}
+              onPick={handleSend}
+            />
+          )}
+
+          <Composer disabled={composerDisabled} onSubmit={handleSend} />
         </div>
 
         <WorkspaceSidebar chatId={chatId} />
       </div>
+    </div>
+  );
+}
+
+/**
+ * Horizontal wrap of single-tap demo prompts. Click sends the
+ * full `prompt` string immediately — `label` is just the chip text.
+ */
+function DemoSuggestions({
+  prompts,
+  disabled,
+  onPick,
+}: {
+  prompts: { label: string; prompt: string }[];
+  disabled: boolean;
+  onPick: (text: string) => void;
+}) {
+  return (
+    <div className="flex flex-wrap gap-2" aria-label="Demo prompt suggestions">
+      {prompts.map((p) => (
+        <Button
+          key={p.label}
+          type="button"
+          variant="outline"
+          size="sm"
+          disabled={disabled}
+          onClick={() => onPick(p.prompt)}
+          title={p.prompt}
+        >
+          {p.label}
+        </Button>
+      ))}
     </div>
   );
 }
@@ -304,10 +374,12 @@ function MessageList({
   messages,
   status,
   error,
+  isSampleDb,
 }: {
   messages: UIMessage[];
   status: string;
   error?: Error;
+  isSampleDb: boolean;
 }): React.ReactElement {
   const ref = useRef<HTMLDivElement | null>(null);
   const friendly = toFriendlyError(error);
@@ -323,7 +395,7 @@ function MessageList({
       ref={ref}
       className="flex-1 space-y-4 overflow-y-auto rounded-lg border border-border bg-card p-4"
     >
-      {messages.length === 0 && <EmptyState />}
+      {messages.length === 0 && <EmptyState isSampleDb={isSampleDb} />}
       {messages.map((m) => (
         <MessageBubble key={m.id} message={m} />
       ))}
@@ -361,7 +433,15 @@ function ErrorBanner({ friendly }: { friendly: FriendlyError }) {
   );
 }
 
-function EmptyState(): React.ReactElement {
+function EmptyState({ isSampleDb }: { isSampleDb: boolean }): React.ReactElement {
+  if (isSampleDb) {
+    return (
+      <div className="space-y-2 py-12 text-center text-sm text-muted-foreground">
+        <p className="text-base font-medium text-foreground">Try the employees demo</p>
+        <p>Click a prompt below or type your own.</p>
+      </div>
+    );
+  }
   return (
     <div className="space-y-2 py-12 text-center text-sm text-muted-foreground">
       <p className="text-base font-medium text-foreground">Ask anything about your data</p>

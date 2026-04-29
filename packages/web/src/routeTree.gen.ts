@@ -13,6 +13,7 @@ import { Route as LoginRouteImport } from "./routes/login";
 import { Route as AppRouteImport } from "./routes/app";
 import { Route as IndexRouteImport } from "./routes/index";
 import { Route as AppIndexRouteImport } from "./routes/app.index";
+import { Route as AppWelcomeRouteImport } from "./routes/app.welcome";
 import { Route as AppDbProfilesRouteImport } from "./routes/app.db-profiles";
 import { Route as AppChatsChatIdRouteImport } from "./routes/app.chats.$chatId";
 
@@ -36,6 +37,11 @@ const AppIndexRoute = AppIndexRouteImport.update({
   path: "/",
   getParentRoute: () => AppRoute,
 } as any);
+const AppWelcomeRoute = AppWelcomeRouteImport.update({
+  id: "/welcome",
+  path: "/welcome",
+  getParentRoute: () => AppRoute,
+} as any);
 const AppDbProfilesRoute = AppDbProfilesRouteImport.update({
   id: "/db-profiles",
   path: "/db-profiles",
@@ -52,6 +58,7 @@ export interface FileRoutesByFullPath {
   "/app": typeof AppRouteWithChildren;
   "/login": typeof LoginRoute;
   "/app/db-profiles": typeof AppDbProfilesRoute;
+  "/app/welcome": typeof AppWelcomeRoute;
   "/app/": typeof AppIndexRoute;
   "/app/chats/$chatId": typeof AppChatsChatIdRoute;
 }
@@ -59,6 +66,7 @@ export interface FileRoutesByTo {
   "/": typeof IndexRoute;
   "/login": typeof LoginRoute;
   "/app/db-profiles": typeof AppDbProfilesRoute;
+  "/app/welcome": typeof AppWelcomeRoute;
   "/app": typeof AppIndexRoute;
   "/app/chats/$chatId": typeof AppChatsChatIdRoute;
 }
@@ -68,15 +76,31 @@ export interface FileRoutesById {
   "/app": typeof AppRouteWithChildren;
   "/login": typeof LoginRoute;
   "/app/db-profiles": typeof AppDbProfilesRoute;
+  "/app/welcome": typeof AppWelcomeRoute;
   "/app/": typeof AppIndexRoute;
   "/app/chats/$chatId": typeof AppChatsChatIdRoute;
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath;
-  fullPaths: "/" | "/app" | "/login" | "/app/db-profiles" | "/app/" | "/app/chats/$chatId";
+  fullPaths:
+    | "/"
+    | "/app"
+    | "/login"
+    | "/app/db-profiles"
+    | "/app/welcome"
+    | "/app/"
+    | "/app/chats/$chatId";
   fileRoutesByTo: FileRoutesByTo;
-  to: "/" | "/login" | "/app/db-profiles" | "/app" | "/app/chats/$chatId";
-  id: "__root__" | "/" | "/app" | "/login" | "/app/db-profiles" | "/app/" | "/app/chats/$chatId";
+  to: "/" | "/login" | "/app/db-profiles" | "/app/welcome" | "/app" | "/app/chats/$chatId";
+  id:
+    | "__root__"
+    | "/"
+    | "/app"
+    | "/login"
+    | "/app/db-profiles"
+    | "/app/welcome"
+    | "/app/"
+    | "/app/chats/$chatId";
   fileRoutesById: FileRoutesById;
 }
 export interface RootRouteChildren {
@@ -115,6 +139,13 @@ declare module "@tanstack/react-router" {
       preLoaderRoute: typeof AppIndexRouteImport;
       parentRoute: typeof AppRoute;
     };
+    "/app/welcome": {
+      id: "/app/welcome";
+      path: "/welcome";
+      fullPath: "/app/welcome";
+      preLoaderRoute: typeof AppWelcomeRouteImport;
+      parentRoute: typeof AppRoute;
+    };
     "/app/db-profiles": {
       id: "/app/db-profiles";
       path: "/db-profiles";
@@ -134,12 +165,14 @@ declare module "@tanstack/react-router" {
 
 interface AppRouteChildren {
   AppDbProfilesRoute: typeof AppDbProfilesRoute;
+  AppWelcomeRoute: typeof AppWelcomeRoute;
   AppIndexRoute: typeof AppIndexRoute;
   AppChatsChatIdRoute: typeof AppChatsChatIdRoute;
 }
 
 const AppRouteChildren: AppRouteChildren = {
   AppDbProfilesRoute: AppDbProfilesRoute,
+  AppWelcomeRoute: AppWelcomeRoute,
   AppIndexRoute: AppIndexRoute,
   AppChatsChatIdRoute: AppChatsChatIdRoute,
 };

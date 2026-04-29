@@ -4,7 +4,8 @@ import { ChevronLeft } from "lucide-react";
 import { ChatRoom } from "~/components/ChatRoom";
 import { Skeleton } from "~/components/ui/skeleton";
 import { Alert, AlertDescription } from "~/components/ui/alert";
-import { chatsApi } from "~/lib/api";
+import { chatsApi, dbProfilesApi } from "~/lib/api";
+import { isSampleProfile } from "~/lib/sample-db";
 
 export const Route = createFileRoute("/app/chats/$chatId")({
   component: ChatDetail,
@@ -18,6 +19,20 @@ function ChatDetail() {
     // Avoid refetching while the chat is open — the WS is the source of truth.
     staleTime: 60_000,
   });
+
+  // Profiles are cached across routes (same query key as the index +
+  // welcome routes), so this is a free lookup for the demo-chip
+  // gate. We can't drive isSampleDb off the chat fetch alone — only
+  // the dbProfileId comes back, not the profile name.
+  const profiles = useQuery({
+    queryKey: ["db-profiles"],
+    queryFn: () => dbProfilesApi.list().then((r) => r.profiles),
+  });
+
+  const profile = chat.data?.chat.dbProfileId
+    ? profiles.data?.find((p) => p.id === chat.data!.chat.dbProfileId)
+    : undefined;
+  const isSampleDb = profile ? isSampleProfile(profile) : false;
 
   return (
     <div className="flex h-full flex-col gap-3">
@@ -41,7 +56,12 @@ function ChatDetail() {
 
       {chat.data && (
         <div className="mx-auto w-full max-w-6xl flex-1 overflow-hidden">
-          <ChatRoom chatId={chatId} title={chat.data.chat.title} members={chat.data.members} />
+          <ChatRoom
+            chatId={chatId}
+            title={chat.data.chat.title}
+            members={chat.data.members}
+            isSampleDb={isSampleDb}
+          />
         </div>
       )}
     </div>

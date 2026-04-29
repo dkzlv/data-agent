@@ -1,8 +1,10 @@
 import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { ChevronRight, Plus } from "lucide-react";
 import { chatsApi, dbProfilesApi } from "~/lib/api";
+import { isSampleProfile } from "~/lib/sample-db";
+import { Badge } from "~/components/ui/badge";
 import { Button } from "~/components/ui/button";
 import { Label } from "~/components/ui/label";
 import {
@@ -29,10 +31,23 @@ export const Route = createFileRoute("/app/")({
 });
 
 function ChatsRoute() {
+  const navigate = useNavigate();
   const chats = useQuery({
     queryKey: ["chats"],
     queryFn: () => chatsApi.list().then((r) => r.chats),
   });
+
+  // First-run redirect: a brand-new user (zero chats) lands on
+  // `/app/welcome` with the demo CTA. We do this in an effect rather
+  // than a TanStack `loader` redirect to avoid blocking the first
+  // paint of the chats list for the common case (returning users).
+  // The brief flash of the empty list is acceptable; if it ever
+  // becomes visibly bad, migrate to a loader-based redirect.
+  useEffect(() => {
+    if (chats.data && chats.data.length === 0 && !chats.isLoading && !chats.error) {
+      navigate({ to: "/app/welcome", replace: true });
+    }
+  }, [chats.data, chats.isLoading, chats.error, navigate]);
 
   return (
     <div className="mx-auto max-w-4xl space-y-6">
@@ -145,7 +160,14 @@ function NewChatDialog() {
                 <SelectItem value="none">No database</SelectItem>
                 {profiles.data?.map((p) => (
                   <SelectItem key={p.id} value={p.id}>
-                    {p.name}
+                    <span className="inline-flex items-center gap-2">
+                      <span>{p.name}</span>
+                      {isSampleProfile(p) && (
+                        <Badge variant="muted" className="text-[10px] uppercase">
+                          Demo
+                        </Badge>
+                      )}
+                    </span>
                   </SelectItem>
                 ))}
               </SelectContent>
