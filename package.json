@@ -16,7 +16,7 @@
     "lint": "oxlint .",
     "format": "biome format --write .",
     "format:check": "biome format .",
-    "test": "pnpm -r --parallel test",
+    "test": "pnpm -r --parallel run test --if-present",
     "clean": "tsc --build --clean && rimraf '**/dist' '**/.wrangler' '**/.tsbuildinfo'"
   },
   "devDependencies": {

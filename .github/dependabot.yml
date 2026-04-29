@@ -1,0 +1,26 @@
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: monthly
+    open-pull-requests-limit: 5
+  - package-ecosystem: npm
+    directory: /
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 10
+    groups:
+      cloudflare:
+        patterns:
+          - "@cloudflare/*"
+          - "wrangler"
+          - "workers-ai-provider"
+          - "agents"
+      ai:
+        patterns:
+          - "ai"
+          - "@ai-sdk/*"
+      tanstack:
+        patterns:
+          - "@tanstack/*"

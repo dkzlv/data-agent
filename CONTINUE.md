@@ -198,7 +198,7 @@ export function createAuth(env: Env) {
 
 (append after each subtask)
 
-- [ ] 776325 Initialize monorepo
+- [x] 776325 Initialize monorepo
 - [ ] 9c2659 Set up CI
 - [ ] a636fe Provision Cloudflare account
 - [ ] 93f695 Pick + provision control-plane DB
