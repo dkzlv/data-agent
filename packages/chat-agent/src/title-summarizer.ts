@@ -167,6 +167,9 @@ export async function summarizeAndPersistTitle(env: Env, opts: SummarizeOpts): P
 
   let rawTitle: string | null = null;
   let outputTokens: number | null = null;
+  let reasoningTokens: number | null = null;
+  let outputChars: number = 0;
+  let reasoningChars: number | null = null;
   try {
     const workersai = createWorkersAI({ binding: env.AI });
     const gateway = opts.gatewayId
@@ -190,15 +193,16 @@ export async function summarizeAndPersistTitle(env: Env, opts: SummarizeOpts): P
         | "@cf/zai-org/glm-4.7-flash"
         | "@cf/openai/gpt-oss-120b",
       {
-        // For a 3-6 word title we don't want reasoning. Kimi K2.6 has
-        // thinking enabled by default on the chat path; if the title
-        // call inherits that, the thinking tokens consume the entire
-        // (small) output-token budget before any title text is emitted.
-        // Earlier the summarizer never produced a title for the common
-        // chat model and the chat list stayed at "New chat" forever.
-        chat_template_kwargs: {
-          enable_thinking: false,
-        },
+        // Force-disable thinking for the title call. Kimi K2.6's
+        // binding default emits reasoning tokens that eat
+        // maxOutputTokens before any visible text — empirically
+        // observed as result.text === "" → sanitize_rejected (chat
+        // 43b2e44d). `clear_thinking: true` belt-and-braces for
+        // bindings that retain thinking state across calls. No-op on
+        // non-thinking models.
+        chat_template_kwargs: { enable_thinking: false, clear_thinking: true },
+        // Belt+braces for reasoning-capable models (gpt-oss). No-op on
+        // models that don't honor it.
         reasoning_effort: "low",
         ...(gateway ? { gateway } : {}),
       }
@@ -210,14 +214,25 @@ export async function summarizeAndPersistTitle(env: Env, opts: SummarizeOpts): P
       prompt: opts.userMessageText,
       temperature: 0.3,
       // Bumped from 24 → 64 so the model has room to produce a 3-6
-      // word title even after a few BPE quirks. 64 tokens is well
-      // under our wall-clock budget and easily fits the longest
-      // sanitized title (8 words, ~80 chars).
+      // word title even after a few BPE quirks, and as cheap
+      // insurance against stray reasoning tokens if the runtime
+      // ignores `enable_thinking:false`. Sanitize caps word count
+      // regardless.
       maxOutputTokens: 64,
     });
     rawTitle = result.text;
-    const usage = (result as { usage?: { outputTokens?: number } }).usage;
+    const usage = (
+      result as {
+        usage?: { outputTokens?: number; reasoningTokens?: number };
+      }
+    ).usage;
     if (usage && typeof usage.outputTokens === "number") outputTokens = usage.outputTokens;
+    if (usage && typeof usage.reasoningTokens === "number") {
+      reasoningTokens = usage.reasoningTokens;
+    }
+    outputChars = (rawTitle ?? "").length;
+    const reasoningTextLen = (result as { reasoningText?: string }).reasoningText?.length;
+    if (typeof reasoningTextLen === "number") reasoningChars = reasoningTextLen;
   } catch (err) {
     logEvent({
       event: "chat.title_summarize_failed",
@@ -244,7 +259,15 @@ export async function summarizeAndPersistTitle(env: Env, opts: SummarizeOpts): P
       model: opts.modelId,
       durationMs: Date.now() - startedAt,
       reason: "sanitize_rejected",
-      rawPreview: (rawTitle ?? "").slice(0, 120),
+      // 240 (was 120) — titles are tiny so this is for diagnosis,
+      // not noise. We need the full picture when the sanitizer
+      // rejects to tell "model returned junk" from "model returned
+      // empty because reasoning ate the budget".
+      rawPreview: (rawTitle ?? "").slice(0, 240),
+      outputChars,
+      reasoningChars,
+      outputTokens,
+      reasoningTokens,
     });
     return;
   }
@@ -361,6 +384,9 @@ export async function summarizeAndPersistTitle(env: Env, opts: SummarizeOpts): P
     model: opts.modelId,
     durationMs,
     title: sanitized,
+    outputChars,
+    reasoningChars,
     outputTokens,
+    reasoningTokens,
   });
 }

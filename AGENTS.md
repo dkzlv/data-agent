@@ -299,6 +299,7 @@ in the dashboard. Stable event names (so saved queries don't break):
 | `chat.title_summarize_start` | chat-agent | first user message → fire-and-forget summarizer enters |
 | `chat.title_summarized` | chat-agent | auto-title saved + broadcast |
 | `chat.title_summarize_failed` | chat-agent | model err / sanitize reject / race lost / persist err |
+| `chat.title_summarize_skipped` | chat-agent | trigger fired but didn't schedule (no_text / text_too_short / tenant_unresolved) |
 | `ws.upgrade` / `ws.upgrade_response` / `ws.upgrade_failed` | api-gateway | WS reverse-proxy boundary |
 
 Every chat-agent event carries a `turnId` (for in-turn events) or

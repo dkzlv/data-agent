@@ -341,8 +341,34 @@ export class ChatAgent extends Think<Env> {
               // against an unexpected throw escaping waitUntil.
             })
           );
+        } else {
+          // Trigger fired but the message wasn't usable. Without this
+          // we can't tell "the trigger never fired" (regression) from
+          // "the user typed 'hi'" (expected). Cheap to log: only fires
+          // on the first turn of a new chat.
+          logEvent({
+            event: "chat.title_summarize_skipped",
+            level: "info",
+            chatId: this.name,
+            tenantId,
+            reason: !text ? "no_text" : "text_too_short",
+            textLen: text?.length ?? 0,
+          });
         }
       }
+      // Note: userMsgs.length !== 1 is the expected steady-state on
+      // every 2nd+ turn — don't log it, would be noisy.
+    } else if (!this._titleSummaryScheduled && !tenantId) {
+      // resolveChatContext failed earlier this turn (already logged
+      // chat.context_resolve_failed). Surface the downstream effect on
+      // auto-titling so reading just title-related logs tells the
+      // story.
+      logEvent({
+        event: "chat.title_summarize_skipped",
+        level: "warn",
+        chatId: this.name,
+        reason: "tenant_unresolved",
+      });
     }
 
     return { system: buildSystemPrompt(this._cachedChatContext) };
@@ -1205,6 +1231,78 @@ export class ChatAgent extends Think<Env> {
     // Bust the chat context cache too, in case the user swapped dbProfile.
     this._cachedChatContext = undefined;
     return { ok: true };
+  }
+
+  /**
+   * Debug RPC for the title-summarizer (task 0cc87b). Drives the
+   * model + sanitize pipeline directly, bypassing the
+   * once-per-chat trigger gate and the persist/broadcast steps —
+   * we just want to know whether Workers AI returns visible text
+   * for a given prompt with our hardened model options.
+   *
+   * Usage: `scripts/spike-title.ts "show top 5 customers by revenue"`.
+   */
+  @callable()
+  async debugTitleProbe(text: string): Promise<{
+    ok: boolean;
+    rawTitle: string;
+    sanitized: string | null;
+    outputChars: number;
+    reasoningChars: number | null;
+    outputTokens: number | null;
+    reasoningTokens: number | null;
+    durationMs: number;
+    error?: string;
+  }> {
+    const { sanitizeTitle, TITLE_SUMMARY_SYSTEM_PROMPT } = await import("./title-summarizer");
+    const { generateText } = await import("ai");
+    const startedAt = Date.now();
+    try {
+      const workersai = createWorkersAI({ binding: this.env.AI });
+      const modelId = (this.env.CHAT_MODEL ?? DEFAULT_MODEL) as
+        | "@cf/moonshotai/kimi-k2.6"
+        | "@cf/zai-org/glm-4.7-flash"
+        | "@cf/openai/gpt-oss-120b";
+      const model = workersai(modelId, {
+        // Mirror the production title call exactly — the whole point
+        // is to verify these flags actually disable thinking.
+        chat_template_kwargs: { enable_thinking: false, clear_thinking: true },
+        reasoning_effort: "low",
+      });
+      const result = await generateText({
+        model,
+        system: TITLE_SUMMARY_SYSTEM_PROMPT,
+        prompt: text,
+        temperature: 0.3,
+        maxOutputTokens: 64,
+      });
+      const usage = (
+        result as { usage?: { outputTokens?: number; reasoningTokens?: number } }
+      ).usage;
+      const reasoningTextLen = (result as { reasoningText?: string }).reasoningText?.length;
+      return {
+        ok: true,
+        rawTitle: result.text,
+        sanitized: sanitizeTitle(result.text),
+        outputChars: result.text.length,
+        reasoningChars: typeof reasoningTextLen === "number" ? reasoningTextLen : null,
+        outputTokens: usage?.outputTokens ?? null,
+        reasoningTokens: usage?.reasoningTokens ?? null,
+        durationMs: Date.now() - startedAt,
+      };
+    } catch (err) {
+      return {
+        ok: false,
+        rawTitle: "",
+        sanitized: null,
+        outputChars: 0,
+        reasoningChars: null,
+        outputTokens: null,
+        reasoningTokens: null,
+        durationMs: Date.now() - startedAt,
+        error: truncateMessage(err),
+      };
+    }
   }
 
   /**
