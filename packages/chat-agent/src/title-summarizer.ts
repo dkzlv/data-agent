@@ -154,6 +154,66 @@ export function extractFirstUserText(message: unknown): string | null {
   return joined;
 }
 
+/**
+ * Inputs for `maybeScheduleTitleSummary`. Kept separate from
+ * `SummarizeOpts` because the trigger gate doesn't need the model id,
+ * gateway, broadcast etc — those are only needed if we *do* schedule.
+ */
+export interface TriggerInputs {
+  chatId: string;
+  tenantId: string | null;
+  /** True if we've already scheduled in this DO instance. */
+  alreadyScheduled: boolean;
+  /** The persisted message list so we can detect "first user message". */
+  messages: unknown[];
+}
+
+export type TriggerResult =
+  | { scheduled: false; reason: "already_scheduled" | "tenant_unresolved" | "not_first_turn" }
+  | { scheduled: false; reason: "no_text" | "text_too_short"; textLen: number }
+  | { scheduled: true; userMessageText: string };
+
+/**
+ * Pure decision helper for the auto-title trigger (subtask 16656a).
+ *
+ * Returns whether the caller should kick off `summarizeAndPersistTitle`
+ * and (when not) why it skipped. The agent uses the result to:
+ *   - flip `_titleSummaryScheduled` only when we actually schedule
+ *   - log `chat.title_summarize_skipped` for diagnostic skip reasons
+ *
+ * Trigger gates (matching the pre-extraction semantics exactly):
+ *   - Per-DO `alreadyScheduled` flag stops re-fires on resume/reconnect.
+ *   - We only run on the FIRST user message — `userMsgs.length === 1`.
+ *     Think persists the just-arrived user message before `beforeTurn`
+ *     runs, so on the first turn we expect exactly 1.
+ *   - Skip when tenantId is unresolved (the persist step needs it).
+ *   - 4-char minimum on the user message so a stray "hi" / "?" /
+ *     blank doesn't burn a model call on garbage.
+ */
+export function maybeScheduleTitleSummary(inputs: TriggerInputs): TriggerResult {
+  if (inputs.alreadyScheduled) {
+    return { scheduled: false, reason: "already_scheduled" };
+  }
+  if (!inputs.tenantId) {
+    return { scheduled: false, reason: "tenant_unresolved" };
+  }
+  const userMsgs = Array.isArray(inputs.messages)
+    ? inputs.messages.filter((m) => (m as { role?: string }).role === "user")
+    : [];
+  if (userMsgs.length !== 1) {
+    return { scheduled: false, reason: "not_first_turn" };
+  }
+  const text = extractFirstUserText(userMsgs[0]);
+  if (!text) {
+    return { scheduled: false, reason: "no_text", textLen: 0 };
+  }
+  const trimmed = text.trim();
+  if (trimmed.length < 4) {
+    return { scheduled: false, reason: "text_too_short", textLen: text.length };
+  }
+  return { scheduled: true, userMessageText: text };
+}
+
 export interface SummarizeOpts {
   chatId: string;
   tenantId: string;
@@ -401,4 +461,86 @@ export async function summarizeAndPersistTitle(env: Env, opts: SummarizeOpts): P
     outputTokens,
     reasoningTokens,
   });
+}
+
+/**
+ * Inputs for `scheduleTitleSummary`. Combines the trigger-gate inputs
+ * with the run-time deps the actual model+persist call needs.
+ *
+ * Kept as a flat object (not nested) so callers don't construct
+ * intermediate values they have to keep in sync.
+ */
+export interface ScheduleInputs {
+  env: Env;
+  chatId: string;
+  tenantId: string | null;
+  /** True if we've already scheduled in this DO instance. */
+  alreadyScheduled: boolean;
+  /** The persisted message list, used to detect "first user message". */
+  messages: unknown[];
+  userId: string | null;
+  modelId: string;
+  gatewayId: string | null;
+  broadcast: (msg: string) => void;
+  onApplied?: (title: string) => void;
+  /** waitUntil-compatible callback so the caller (the agent) can
+   *  ensure the model call survives the hook returning. */
+  waitUntil: (p: Promise<unknown>) => void;
+  /** Bound logger for skip-reason diagnostics. We intentionally do
+   *  NOT log the expected "already_scheduled" / "not_first_turn"
+   *  skips — those would be noise on every 2nd+ turn of every chat. */
+  logSkip: (reason: "no_text" | "text_too_short" | "tenant_unresolved", textLen?: number) => void;
+}
+
+/**
+ * Decide whether to kick off a title summary, schedule it (via
+ * waitUntil) if so, and otherwise emit a skip-reason diagnostic
+ * for the cases that warrant one.
+ *
+ * Returns whether scheduling happened so the caller can flip its
+ * once-per-DO flag. Pure-ish: no IO done synchronously; the model
+ * call is fired into the caller's `waitUntil`.
+ */
+export function scheduleTitleSummary(inputs: ScheduleInputs): { scheduled: boolean } {
+  const result = maybeScheduleTitleSummary({
+    chatId: inputs.chatId,
+    tenantId: inputs.tenantId,
+    alreadyScheduled: inputs.alreadyScheduled,
+    messages: inputs.messages,
+  });
+
+  if (result.scheduled) {
+    inputs.waitUntil(
+      summarizeAndPersistTitle(inputs.env, {
+        chatId: inputs.chatId,
+        tenantId: inputs.tenantId!, // gate above guarantees non-null
+        userId: inputs.userId,
+        userMessageText: result.userMessageText,
+        modelId: inputs.modelId,
+        gatewayId: inputs.gatewayId,
+        broadcast: inputs.broadcast,
+        onApplied: inputs.onApplied,
+      }).catch(() => {
+        // Belt-and-braces: summarizeAndPersistTitle catches its own
+        // errors and logs them. This guards against a sneaky throw
+        // escaping the function (e.g. a TypeError during arg parse).
+      })
+    );
+    return { scheduled: true };
+  }
+
+  switch (result.reason) {
+    case "no_text":
+    case "text_too_short":
+      inputs.logSkip(result.reason, result.textLen);
+      break;
+    case "tenant_unresolved":
+      // Only log when not already scheduled — otherwise we'd log on
+      // every turn of an un-resolvable chat. (`alreadyScheduled` is
+      // separately gated above.)
+      inputs.logSkip("tenant_unresolved");
+      break;
+    // already_scheduled / not_first_turn → expected, no log.
+  }
+  return { scheduled: false };
 }
