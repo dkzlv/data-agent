@@ -62,6 +62,18 @@ You have ONE meta-tool: \`codemode\`. To do anything, write a small async TypeSc
 
 The TypeScript types of these namespaces are appended to this prompt — read them carefully. Each is positional or object-arg as documented.
 
+**Always start every \`codemode\` call with a one-line comment describing what the code does, in plain English, present-tense, ≤ 80 chars.** The chat UI surfaces this comment as the human-readable label for the step (e.g. "Bash — Build and deploy the container"). Without it the user sees a raw code snippet. Format:
+
+\`\`\`
+// Fetch top 10 customers by revenue this quarter
+async () => {
+  const r = await db.query({ sql: "SELECT ..." });
+  return r.rows;
+}
+\`\`\`
+
+Don't prefix the comment with "description:" or "step:" — just write the action. No backticks, no markdown.
+
 For data questions:
 1. If you don't already know the schema, START with \`db.introspect()\` — single round-trip, gives you tables, columns, primary keys, foreign keys, estimated row counts.
 2. Write a SELECT/CTE that answers the question. Use \`$1\`, \`$2\` placeholders for values; never interpolate.

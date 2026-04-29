@@ -42,6 +42,15 @@ describe("system prompt", () => {
     expect(_SECTIONS.HOW_TO_WORK).toContain("never interpolate");
   });
 
+  it("requires a leading description comment in every codemode call", () => {
+    // The chat UI parses the first `//` comment line and surfaces it
+    // as the human-readable label for the step. Without this rule the
+    // collapsed tool-call rows would just show raw JS — see
+    // `extractCodemodeDescription` in `ChatRoom.tsx`.
+    expect(_SECTIONS.HOW_TO_WORK).toMatch(/start every `codemode` call with a one-line comment/i);
+    expect(_SECTIONS.HOW_TO_WORK).toContain("// Fetch top 10 customers");
+  });
+
   it("teaches output style", () => {
     expect(_SECTIONS.OUTPUT_STYLE).toContain("Lead with the answer");
     expect(_SECTIONS.OUTPUT_STYLE).toContain("Show the SQL");

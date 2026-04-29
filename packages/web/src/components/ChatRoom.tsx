@@ -14,7 +14,7 @@
  * earlier "Loading…" string caused a visible layout pop on each
  * navigation into a chat.
  */
-import type { FormEvent } from "react";
+import type { FormEvent, KeyboardEvent } from "react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { UIMessage } from "ai";
 import { useAgent } from "agents/react";
@@ -22,16 +22,36 @@ import { useAgentChat } from "@cloudflare/ai-chat/react";
 import { useQueryClient } from "@tanstack/react-query";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
-import { Send, ChevronRight, ChartBar, Users } from "lucide-react";
+import TextareaAutosize from "react-textarea-autosize";
+import {
+  ArrowUp,
+  ChartBar,
+  ChevronRight,
+  Code2,
+  Database,
+  FileText,
+  Image as ImageIcon,
+  Square,
+  Terminal,
+  Users,
+  Wrench,
+} from "lucide-react";
 import { ArtifactViewer, asArtifactRef } from "./ArtifactViewer";
+import { CodeBlock } from "./CodeBlock";
 import { WorkspaceSidebar, WorkspaceSidebarBody } from "./WorkspaceSidebar";
 import { getChatHost } from "~/lib/chat-host";
 import { type FriendlyError, toFriendlyError } from "~/lib/agent-error";
 import { Button } from "~/components/ui/button";
-import { Textarea } from "~/components/ui/textarea";
+import { InputGroup, InputGroupAddon, InputGroupButton } from "~/components/ui/input-group";
 import { Skeleton } from "~/components/ui/skeleton";
 import { Alert, AlertDescription, AlertTitle } from "~/components/ui/alert";
 import { Badge } from "~/components/ui/badge";
+import {
+  ScrollAreaRoot,
+  ScrollAreaScrollbar,
+  ScrollAreaThumb,
+  ScrollAreaViewport,
+} from "~/components/ui/scroll-area";
 import { Sheet, SheetContent, SheetHeader, SheetTitle, SheetTrigger } from "~/components/ui/sheet";
 import { Tooltip, TooltipContent, TooltipTrigger } from "~/components/ui/tooltip";
 import { EMPLOYEES_DEMO_PROMPTS } from "~/lib/sample-db";
@@ -240,7 +260,23 @@ export function ChatRoom({
     [chat]
   );
 
-  const composerDisabled = !isReady || chat.status === "streaming" || chat.status === "submitted";
+  // True while a turn is in flight — covers both the user-initiated
+  // request/response cycle (`status`) and any server-initiated stream
+  // (auto-continuation after a tool call, recovery push from another
+  // tab). When this is true the composer flips its submit affordance
+  // to a stop button so the user can interrupt without typing.
+  const isTurnInFlight =
+    chat.status === "streaming" || chat.status === "submitted" || chat.isServerStreaming;
+
+  // The composer itself is only fully disabled until the WS is ready
+  // (i.e. you can't type into a not-yet-connected chat). While a turn
+  // is in flight, the textarea stays enabled so the user can compose
+  // their next message — they just can't *send* it until the current
+  // turn completes (the submit button becomes a stop button).
+  const composerLocked = !isReady;
+  const handleStop = useCallback(() => {
+    chat.stop();
+  }, [chat]);
   // Chips show only on a fresh sample-DB chat. They disappear the
   // moment the first message lands (whether sent via chip or typed)
   // because `chat.messages.length` becomes > 0.
@@ -277,12 +313,17 @@ export function ChatRoom({
           {showDemoSuggestions && (
             <DemoSuggestions
               prompts={EMPLOYEES_DEMO_PROMPTS}
-              disabled={composerDisabled}
+              disabled={composerLocked || isTurnInFlight}
               onPick={handleSend}
             />
           )}
 
-          <Composer disabled={composerDisabled} onSubmit={handleSend} />
+          <Composer
+            locked={composerLocked}
+            isStreaming={isTurnInFlight}
+            onSubmit={handleSend}
+            onStop={handleStop}
+          />
         </div>
 
         <WorkspaceSidebar chatId={chatId} />
@@ -381,44 +422,93 @@ function MessageList({
   error?: Error;
   isSampleDb: boolean;
 }): React.ReactElement {
-  const ref = useRef<HTMLDivElement | null>(null);
+  const viewportRef = useRef<HTMLDivElement | null>(null);
+  // "stickToBottom" autoscroll: as long as the user is scrolled to
+  // (or near) the bottom we follow new content. The moment they scroll
+  // up — to re-read an earlier turn or to inspect a chart — we stop
+  // pinning so the page doesn't yank under them. Re-engages when they
+  // scroll back to within 32px of the bottom.
+  const [stickToBottom, setStickToBottom] = useState(true);
   const friendly = toFriendlyError(error);
 
-  // Auto-scroll to bottom on new messages.
+  // Track every chunk: messages count, last message's parts length,
+  // and the text length of the streaming text part. The earlier
+  // implementation only watched `messages.length` + `status`, which
+  // missed the in-message growth — long answers visibly drifted off
+  // the bottom while the model was still talking.
+  const scrollKey = useMemo(() => {
+    const last = messages[messages.length - 1];
+    if (!last) return `${messages.length}:${status}`;
+    const parts = (last.parts as unknown as UIPart[]) ?? [];
+    const tail = parts[parts.length - 1];
+    const tailLen =
+      tail && typeof tail.text === "string"
+        ? tail.text.length
+        : tail
+          ? JSON.stringify(tail).length
+          : 0;
+    return `${messages.length}:${parts.length}:${tailLen}:${status}`;
+  }, [messages, status]);
+
   useEffect(() => {
-    if (!ref.current) return;
-    ref.current.scrollTop = ref.current.scrollHeight;
-  }, [messages.length, status]);
+    if (!stickToBottom) return;
+    const v = viewportRef.current;
+    if (!v) return;
+    // rAF so the DOM has measured the new content first; double rAF
+    // matters for streaming markdown where the layout reflows after
+    // a synchronous setState on the message store.
+    const id1 = requestAnimationFrame(() => {
+      const id2 = requestAnimationFrame(() => {
+        v.scrollTop = v.scrollHeight;
+      });
+      // Cancel only the inner frame; outer ran already.
+      return () => cancelAnimationFrame(id2);
+    });
+    return () => cancelAnimationFrame(id1);
+  }, [scrollKey, stickToBottom]);
+
+  // Detect user-driven scroll-up to disable stickiness, and re-engage
+  // when they return to the bottom. 32px is a comfortable epsilon
+  // that survives fractional-pixel rounding on hi-DPI displays.
+  const onScroll = useCallback((e: React.UIEvent<HTMLDivElement>) => {
+    const el = e.currentTarget;
+    const distanceFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight;
+    setStickToBottom(distanceFromBottom < 32);
+  }, []);
 
   return (
-    <div
-      ref={ref}
-      className="flex-1 space-y-4 overflow-y-auto rounded-lg border border-border bg-card p-4"
-    >
-      {messages.length === 0 && <EmptyState isSampleDb={isSampleDb} />}
-      {messages.map((m) => (
-        <MessageBubble key={m.id} message={m} />
-      ))}
-      {status === "streaming" && (
-        <p className="flex items-center gap-2 text-xs text-muted-foreground">
-          <span className="inline-flex gap-0.5">
-            <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-muted-foreground [animation-delay:-0.3s]" />
-            <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-muted-foreground [animation-delay:-0.15s]" />
-            <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-muted-foreground" />
-          </span>
-          thinking
-        </p>
-      )}
-      {/*
-        We render the error banner as the *last* item in the message
-        list (rather than a fixed banner at the top) so it appears
-        in-context with the failed turn.
-      */}
-      {friendly && <ErrorBanner friendly={friendly} />}
-      {status === "error" && !friendly && (
-        <p className="text-xs text-destructive">Connection error — reconnecting…</p>
-      )}
-    </div>
+    <ScrollAreaRoot className="flex-1 rounded-lg border border-border bg-card">
+      <ScrollAreaViewport ref={viewportRef} onScroll={onScroll} className="h-full max-h-full p-4">
+        <div className="space-y-4">
+          {messages.length === 0 && <EmptyState isSampleDb={isSampleDb} />}
+          {messages.map((m) => (
+            <MessageBubble key={m.id} message={m} />
+          ))}
+          {status === "submitted" && (
+            <p className="flex items-center gap-2 text-xs text-muted-foreground">
+              <span className="inline-flex gap-0.5">
+                <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-muted-foreground [animation-delay:-0.3s]" />
+                <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-muted-foreground [animation-delay:-0.15s]" />
+                <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-muted-foreground" />
+              </span>
+              thinking
+            </p>
+          )}
+          {/*
+            We render the error banner as the *last* item in the message
+            list (rather than a fixed banner at the top) so it appears
+            in-context with the failed turn.
+          */}
+          {friendly && <ErrorBanner friendly={friendly} />}
+          {status === "error" && !friendly && (
+            <p className="text-xs text-destructive">Connection error — reconnecting…</p>
+          )}
+        </div>
+      </ScrollAreaViewport>
+      <ScrollAreaScrollbar>
+        <ScrollAreaThumb />
+      </ScrollAreaScrollbar>
+    </ScrollAreaRoot>
   );
 }
 
@@ -516,37 +606,96 @@ function PartRender({
 function ReasoningPart({ part }: { part: UIPart }) {
   const text = part.text ?? "";
   const streaming = part.state === "streaming";
-  const preview = (() => {
+
+  // Track elapsed thinking time. We start the clock the first time
+  // we see this part and freeze it the moment streaming flips false
+  // (i.e. the model emitted its final reasoning chunk). Persisting
+  // the frozen value across rerenders means the label stays stable
+  // ("Thought for 12s") even after the message is fully delivered
+  // — refreshing the chat won't reset it because the frozen value
+  // is recomputed from the (effectively constant) text length.
+  const startedAt = useRef<number | null>(null);
+  const [tick, setTick] = useState(0);
+  const [frozenSeconds, setFrozenSeconds] = useState<number | null>(null);
+
+  useEffect(() => {
+    if (!streaming) return;
+    if (startedAt.current == null) startedAt.current = Date.now();
+    const id = setInterval(() => setTick((t) => t + 1), 250);
+    return () => clearInterval(id);
+  }, [streaming]);
+
+  useEffect(() => {
+    // The first non-streaming render after streaming → freeze the
+    // elapsed value. After this `frozenSeconds` carries the label.
+    if (!streaming && startedAt.current != null && frozenSeconds == null) {
+      const elapsed = Math.max(1, Math.round((Date.now() - startedAt.current) / 1000));
+      setFrozenSeconds(elapsed);
+    }
+  }, [streaming, frozenSeconds]);
+
+  const seconds = (() => {
+    if (frozenSeconds != null) return frozenSeconds;
+    if (streaming && startedAt.current != null) {
+      // tick is referenced so the closure recomputes on every interval.
+      void tick;
+      return Math.max(1, Math.round((Date.now() - startedAt.current) / 1000));
+    }
+    // Edge case: we mounted with the part already finished (e.g. a
+    // recovered message replay). Estimate from text length so the
+    // label isn't suspiciously "0s". Roughly 30 chars/sec is a
+    // reasonable lower bound for reasoning streams.
     const trimmed = text.trim();
-    const firstLine = trimmed.split(/\n/, 1)[0] ?? "";
-    if (firstLine.length <= 120) return firstLine;
-    return firstLine.slice(0, 117) + "…";
+    if (!trimmed) return 1;
+    return Math.max(1, Math.round(trimmed.length / 30));
   })();
 
+  const label = streaming ? `Thinking…` : `Thought for ${seconds}s`;
+
   return (
-    <details className="group my-1 text-[12px]" open={streaming}>
-      <summary className="flex cursor-pointer select-none items-center gap-1.5 text-muted-foreground transition hover:text-foreground">
-        <ChevronRight className="h-3 w-3 shrink-0 transition group-open:rotate-90" />
-        <span className="font-medium uppercase tracking-wide text-[10px]">Thinking</span>
-        {streaming && (
-          <span
-            className="inline-block h-1.5 w-1.5 animate-pulse rounded-full bg-muted-foreground"
-            aria-label="thinking"
-          />
+    <details className="group my-1 text-[12px]">
+      <summary
+        className={cn(
+          // Match the "Thought for 12s ›" mock: muted, single-line,
+          // chevron rotates on open. No box, no borders — it's a quiet
+          // affordance that the user can drill into if curious.
+          "flex w-fit cursor-pointer select-none items-center gap-1 rounded-md py-0.5 text-muted-foreground/80 transition hover:text-foreground"
         )}
-        {!streaming && preview && (
-          <span className="truncate font-normal italic text-muted-foreground/80 group-open:hidden">
-            {preview}
-          </span>
-        )}
+      >
+        <span className="text-[13px]">{label}</span>
+        <ChevronRight className="h-3.5 w-3.5 shrink-0 transition group-open:rotate-90" />
       </summary>
-      <div className="mt-1 ml-4 whitespace-pre-wrap border-l-2 border-border pl-3 italic leading-relaxed text-muted-foreground">
-        {text}
-      </div>
+      {text && (
+        <div className="mt-1.5 ml-1 whitespace-pre-wrap border-l-2 border-border pl-3 italic leading-relaxed text-muted-foreground">
+          {text}
+        </div>
+      )}
     </details>
   );
 }
 
+/**
+ * ToolPart — visual model:
+ *
+ *   collapsed (default):
+ *     ┌──────────────────────────────────────────────────────┐
+ *     │ [icon] **Code** Fetch top customers by revenue   ›   │
+ *     └──────────────────────────────────────────────────────┘
+ *
+ *   expanded (click chevron / row):
+ *     ┌──────────────────────────────────────────────────────┐
+ *     │ [icon] **Code** Fetch top customers by revenue   ⌄   │
+ *     ├──────────────────────────────────────────────────────┤
+ *     │ ```ts                                                │
+ *     │ async () => { ... }                                  │
+ *     │ ```                                                  │
+ *     │ ──────                                               │
+ *     │ result preview (if any)                              │
+ *     └──────────────────────────────────────────────────────┘
+ *
+ * The collapsed view is intentionally slim (text-[13px], py-2) so
+ * a turn full of tool calls reads as a list, not a stack of cards.
+ */
 function ToolPart({ part }: { part: UIPart }) {
   const rawToolName = part.toolName ?? part.type?.replace(/^tool-/, "") ?? "tool";
   const isCodemode = rawToolName === "codemode";
@@ -558,19 +707,28 @@ function ToolPart({ part }: { part: UIPart }) {
   const codemodeInput = isCodemode ? extractCodemodeCode(part.input) : null;
   const codemodeOutput = isCodemode ? extractCodemodeResult(part.output) : null;
 
-  const summaryLabel = isCodemode ? "ran code" : rawToolName;
-  const statusBadgeCls = {
-    ok: "bg-emerald-500/15 text-emerald-700 dark:text-emerald-300",
-    err: "bg-destructive/15 text-destructive",
-    run: "bg-amber-500/15 text-amber-700 dark:text-amber-300",
-  }[status];
-  const statusLabel = { ok: "✓", err: "✗", run: "…" }[status];
+  const meta = describeTool(rawToolName);
+  // Description: for codemode, peeled out of the leading `// ...`
+  // comment in the generated code (system prompt enforces this).
+  // For other tools, fall back to a tight summary of the input.
+  const description = isCodemode
+    ? (extractCodemodeDescription(codemodeInput) ?? "Running code")
+    : summarizeToolInput(part.input);
 
   const errorSummary =
     status === "err" && part.errorText ? summarizeToolError(rawToolName, part.errorText) : null;
 
+  // Determine the body language for syntax highlighting. Codemode
+  // ships TypeScript-flavoured JS; non-codemode tool inputs are JSON.
+  const bodyLanguage: string = isCodemode ? "tsx" : "json";
+  const bodyCode = isCodemode
+    ? (codemodeInput ?? "")
+    : part.input != null
+      ? safeJsonStringify(part.input)
+      : "";
+
   return (
-    <div className="my-1 space-y-1">
+    <div className="my-1 space-y-1.5">
       {artifact ? <ArtifactViewer ref={artifact} /> : null}
       {errorSummary && (
         <p className="text-xs text-destructive">
@@ -583,73 +741,184 @@ function ToolPart({ part }: { part: UIPart }) {
           ) : null}
         </p>
       )}
-      <details className="group rounded-lg border border-border bg-background/40 text-xs">
-        <summary className="flex cursor-pointer select-none items-center gap-2 px-2.5 py-1.5">
-          <span
-            className={cn(
-              "inline-flex h-4 w-4 items-center justify-center rounded text-[10px] font-bold leading-none",
-              statusBadgeCls
-            )}
-            aria-label={status}
-          >
-            {statusLabel}
-          </span>
-          <span className="font-medium text-foreground/80">{summaryLabel}</span>
-          {isCodemode && codemodeInput && (
-            <span className="ml-1 truncate font-mono text-[10px] text-muted-foreground">
-              {summarizeCode(codemodeInput)}
-            </span>
+      <details className="group overflow-hidden rounded-lg border border-border bg-background/40 text-[13px]">
+        <summary
+          className={cn(
+            "flex cursor-pointer select-none items-center gap-2 px-3 py-2",
+            "transition-colors hover:bg-muted/40"
           )}
-          <ChevronRight className="ml-auto h-3 w-3 shrink-0 text-muted-foreground transition group-open:rotate-90" />
+        >
+          <ToolIcon icon={meta.icon} status={status} />
+          <span className="font-medium text-foreground">{meta.label}</span>
+          {description && (
+            <span className="min-w-0 flex-1 truncate text-muted-foreground">{description}</span>
+          )}
+          <ChevronRight className="ml-auto h-4 w-4 shrink-0 text-muted-foreground transition group-open:rotate-90" />
         </summary>
 
-        <div className="space-y-2 border-t border-border px-2.5 py-2">
-          {isCodemode && codemodeInput && (
-            <div>
-              <div className="mb-0.5 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
-                Code
-              </div>
-              <pre className="max-h-72 overflow-auto rounded bg-muted/50 px-2 py-1.5 font-mono text-[11px] leading-snug">
-                {codemodeInput}
-              </pre>
-            </div>
-          )}
-          {isCodemode && codemodeOutput !== null && (
-            <div>
-              <div className="mb-0.5 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
-                Result
-              </div>
-              <pre className="max-h-72 overflow-auto rounded bg-muted/50 px-2 py-1.5 font-mono text-[11px] leading-snug">
-                {codemodeOutput}
-              </pre>
-            </div>
+        <div className="space-y-3 border-t border-border bg-background/60 p-3">
+          {bodyCode && <CodeBlock code={bodyCode} language={bodyLanguage} className="max-h-80" />}
+
+          {/* Result panel — not all tool calls produce one (e.g. void
+              returns, or codemode functions that resolved to undefined). */}
+          {isCodemode && codemodeOutput !== null && <ToolResult>{codemodeOutput}</ToolResult>}
+          {!isCodemode && part.output != null && (
+            <ToolResult>{safeJsonStringify(part.output)}</ToolResult>
           )}
 
-          {!isCodemode && part.input != null && (
-            <div>
-              <div className="mb-0.5 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
-                Input
-              </div>
-              <pre className="max-h-72 overflow-auto whitespace-pre-wrap break-words rounded bg-muted/50 px-2 py-1.5 font-mono text-[11px] leading-snug">
-                {safeJsonStringify(part.input)}
-              </pre>
-            </div>
+          {part.errorText && (
+            <p className="rounded-md border border-destructive/40 bg-destructive/10 px-2.5 py-1.5 text-xs text-destructive">
+              {part.errorText}
+            </p>
           )}
-          {!isCodemode && part.output != null && (
-            <div>
-              <div className="mb-0.5 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
-                Output
-              </div>
-              <pre className="max-h-72 overflow-auto whitespace-pre-wrap break-words rounded bg-muted/50 px-2 py-1.5 font-mono text-[11px] leading-snug">
-                {safeJsonStringify(part.output)}
-              </pre>
-            </div>
-          )}
-          {part.errorText && <p className="text-destructive">{part.errorText}</p>}
         </div>
       </details>
     </div>
   );
+}
+
+function ToolResult({ children }: { children: string }) {
+  return (
+    <div className="space-y-1">
+      <div className="text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
+        Result
+      </div>
+      <ScrollAreaRoot className="max-h-64 rounded-md border border-border bg-muted/30">
+        <ScrollAreaViewport className="max-h-64 px-3 py-2">
+          <pre className="whitespace-pre-wrap break-words font-mono text-[11px] leading-[1.55] text-foreground/85">
+            {children}
+          </pre>
+        </ScrollAreaViewport>
+        <ScrollAreaScrollbar>
+          <ScrollAreaThumb />
+        </ScrollAreaScrollbar>
+        <ScrollAreaScrollbar orientation="horizontal">
+          <ScrollAreaThumb />
+        </ScrollAreaScrollbar>
+      </ScrollAreaRoot>
+    </div>
+  );
+}
+
+/** Per-tool visual identity — icon + the bolded label in the row. */
+interface ToolMeta {
+  label: string;
+  icon: React.ComponentType<{ className?: string }>;
+}
+function describeTool(rawName: string): ToolMeta {
+  // Codemode is the meta-tool; visually we surface "Code" + a code icon
+  // because the description carries the actual semantic ("Bash", "DB
+  // query", etc. would be misleading — the code may do anything).
+  if (rawName === "codemode") return { label: "Code", icon: Code2 };
+  // Heuristics for any future first-class (non-codemode) tools.
+  const n = rawName.toLowerCase();
+  if (n.startsWith("db") || n.includes("sql") || n.includes("query"))
+    return { label: prettyToolName(rawName), icon: Database };
+  if (n.startsWith("chart") || n.includes("vega"))
+    return { label: prettyToolName(rawName), icon: ChartBar };
+  if (n.startsWith("artifact") || n.includes("file"))
+    return { label: prettyToolName(rawName), icon: FileText };
+  if (n.includes("bash") || n.includes("shell") || n.includes("terminal"))
+    return { label: prettyToolName(rawName), icon: Terminal };
+  if (n.includes("image") || n.includes("screenshot"))
+    return { label: prettyToolName(rawName), icon: ImageIcon };
+  return { label: prettyToolName(rawName), icon: Wrench };
+}
+
+function prettyToolName(name: string): string {
+  // "db_introspect" / "chart.bar" → "Db introspect" / "Chart bar"
+  const cleaned = name.replace(/[._]/g, " ").trim();
+  return cleaned.charAt(0).toUpperCase() + cleaned.slice(1);
+}
+
+/**
+ * Status-tinted icon. We render the tool icon directly (per the
+ * mocks — Bash icon, Browser icon, etc.) and indicate state via a
+ * subtle color shift rather than a separate badge:
+ *   running → muted with a soft pulse
+ *   ok      → foreground (default)
+ *   err     → destructive
+ */
+function ToolIcon({
+  icon: Icon,
+  status,
+}: {
+  icon: React.ComponentType<{ className?: string }>;
+  status: "ok" | "err" | "run";
+}) {
+  return (
+    <Icon
+      className={cn(
+        "h-4 w-4 shrink-0",
+        status === "err" && "text-destructive",
+        status === "run" && "animate-pulse text-muted-foreground",
+        status === "ok" && "text-foreground/70"
+      )}
+    />
+  );
+}
+
+/**
+ * Pull a human-readable description out of the first one-or-two
+ * leading line-comments in a codemode body. The system prompt asks
+ * the model to write `// Fetch top 10 customers by revenue` as the
+ * first line; we strip the `//` and any trailing punctuation. If
+ * the comment is missing (older messages, or model regression), we
+ * return null so the UI falls back to a generic "Running code".
+ */
+function extractCodemodeDescription(code: string | null): string | null {
+  if (!code) return null;
+  // Skip leading whitespace / blank lines, then capture consecutive
+  // single-line comments. We join up to 2 of them to handle the case
+  // where the model writes a wrapped explanation:
+  //   // Compute revenue per customer for Q4
+  //   // and rank descending.
+  const lines = code.split(/\r?\n/);
+  const collected: string[] = [];
+  for (const raw of lines) {
+    const line = raw.trim();
+    if (line === "") {
+      if (collected.length > 0) break;
+      continue;
+    }
+    const m = /^\/\/\s?(.*)$/.exec(line);
+    if (!m) break;
+    const text = m[1].trim();
+    if (!text) break;
+    collected.push(text);
+    if (collected.length >= 2) break;
+  }
+  if (collected.length === 0) return null;
+  let combined = collected.join(" ").replace(/\s+/g, " ").trim();
+  // Drop trailing period/colon/semicolon — these read as noise in
+  // a single-line label.
+  combined = combined.replace(/[.:;]+$/, "");
+  if (combined.length > 110) combined = combined.slice(0, 107) + "…";
+  return combined || null;
+}
+
+/** Generic input → 1-line summary for non-codemode tools. */
+function summarizeToolInput(input: unknown): string {
+  if (input == null) return "";
+  if (typeof input === "string") {
+    const compact = input.replace(/\s+/g, " ").trim();
+    return compact.length > 110 ? compact.slice(0, 107) + "…" : compact;
+  }
+  if (typeof input === "object") {
+    // Prefer well-known summary fields the LLM might pass
+    // ("description", "title", "name", "query"). Falls back to a
+    // single-line JSON preview otherwise.
+    for (const k of ["description", "title", "name", "query", "sql", "url", "path"]) {
+      const v = (input as Record<string, unknown>)[k];
+      if (typeof v === "string" && v.trim()) {
+        const compact = v.replace(/\s+/g, " ").trim();
+        return compact.length > 110 ? compact.slice(0, 107) + "…" : compact;
+      }
+    }
+    const json = safeJsonStringify(input).replace(/\s+/g, " ");
+    return json.length > 110 ? json.slice(0, 107) + "…" : json;
+  }
+  return String(input);
 }
 
 function extractCodemodeCode(input: unknown): string | null {
@@ -688,16 +957,6 @@ function extractCodemodeResult(output: unknown): string | null {
     return safeJsonStringify(result);
   }
   return safeJsonStringify(obj);
-}
-
-function summarizeCode(code: string): string {
-  const stripped = code
-    .replace(/^\s*async\s*\(\s*\)\s*=>\s*\{?\s*/i, "")
-    .replace(/\}\s*$/, "")
-    .trim();
-  const firstLine = stripped.split(/\n/).find((l) => l.trim().length > 0) ?? stripped;
-  const compact = firstLine.replace(/\s+/g, " ").trim();
-  return compact.length > 80 ? compact.slice(0, 77) + "…" : compact;
 }
 
 function safeJsonStringify(v: unknown): string {
@@ -865,49 +1124,130 @@ function idToColor(id: string): string {
   return `oklch(0.78 0.09 ${hue})`;
 }
 
-function Composer({ disabled, onSubmit }: { disabled: boolean; onSubmit: (text: string) => void }) {
+/**
+ * Composer — auto-sizing textarea with a submit / stop button anchored
+ * to the bottom-right of the input group. Implementation follows the
+ * shadcn `input-group` recipe: the textarea is the primary control
+ * (data-slot="input-group-control" gives it the focus styling), and
+ * an `align="block-end"` addon row hosts the action button.
+ *
+ * While a turn is in flight the action flips from Send → Stop. The
+ * textarea stays enabled so users can prep their next prompt; only
+ * the *submit* path is gated.
+ */
+function Composer({
+  locked,
+  isStreaming,
+  onSubmit,
+  onStop,
+}: {
+  /** WS not ready yet → textarea fully disabled. */
+  locked: boolean;
+  /** Turn in flight → submit is replaced by stop. */
+  isStreaming: boolean;
+  onSubmit: (text: string) => void;
+  onStop: () => void;
+}) {
   const [text, setText] = useState("");
   const send = useCallback(
-    (e: FormEvent) => {
-      e.preventDefault();
+    (e?: FormEvent) => {
+      e?.preventDefault();
+      if (locked || isStreaming) return;
       const trimmed = text.trim();
-      if (!trimmed || disabled) return;
+      if (!trimmed) return;
       onSubmit(trimmed);
       setText("");
     },
-    [text, disabled, onSubmit]
+    [text, locked, isStreaming, onSubmit]
   );
 
+  const handleKey = useCallback(
+    (e: KeyboardEvent<HTMLTextAreaElement>) => {
+      // Enter (no shift) submits. Shift+Enter inserts a newline. We
+      // don't gate on Cmd/Ctrl — that was a holdover from the older
+      // textarea where Enter inserted newlines by default.
+      if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
+        e.preventDefault();
+        send();
+      }
+    },
+    [send]
+  );
+
+  const placeholder = locked
+    ? "Connecting…"
+    : "Ask about your data — e.g. 'top 10 customers by revenue this quarter'";
+
   return (
-    <form onSubmit={send} className="flex items-end gap-2">
-      <Textarea
-        value={text}
-        onChange={(e) => setText(e.target.value)}
-        placeholder={
-          disabled
-            ? "Waiting for response…"
-            : "Ask about your data — e.g. 'top 10 customers by revenue this quarter'"
-        }
-        disabled={disabled}
-        rows={2}
-        onKeyDown={(e) => {
-          if (e.key === "Enter" && (e.metaKey || e.ctrlKey || !e.shiftKey)) {
-            e.preventDefault();
-            send(e as unknown as FormEvent);
-          }
-        }}
-        className="min-h-[3rem] flex-1 resize-y"
-      />
-      <Button
-        type="submit"
-        disabled={disabled || !text.trim()}
-        size="lg"
-        className="self-stretch"
-        aria-label="Send"
+    <form onSubmit={send}>
+      <InputGroup
+        className={cn(
+          // The input-group ships a 1px border. We keep that and just
+          // bump the rounding to match the message-list panel.
+          "rounded-lg",
+          locked && "opacity-60"
+        )}
       >
-        <Send className="h-4 w-4" />
-        <span className="hidden sm:inline">Send</span>
-      </Button>
+        <TextareaAutosize
+          data-slot="input-group-control"
+          value={text}
+          onChange={(e) => setText(e.target.value)}
+          onKeyDown={handleKey}
+          placeholder={placeholder}
+          disabled={locked}
+          minRows={2}
+          maxRows={10}
+          className={cn(
+            // Mirrors the shadcn recipe: zero its own borders/bg so
+            // the InputGroup wrapper provides the visual chrome.
+            "flex w-full resize-none bg-transparent px-3 py-2.5 text-sm leading-relaxed",
+            "outline-none placeholder:text-muted-foreground",
+            "disabled:cursor-not-allowed"
+          )}
+          aria-label="Message"
+        />
+        <InputGroupAddon align="block-end" className="px-2 pb-2">
+          <span className="hidden text-[11px] text-muted-foreground sm:inline">
+            <kbd className="rounded border border-border bg-muted/60 px-1 font-mono text-[10px]">
+              Enter
+            </kbd>{" "}
+            send ·{" "}
+            <kbd className="rounded border border-border bg-muted/60 px-1 font-mono text-[10px]">
+              Shift
+            </kbd>
+            +
+            <kbd className="rounded border border-border bg-muted/60 px-1 font-mono text-[10px]">
+              Enter
+            </kbd>{" "}
+            newline
+          </span>
+          {isStreaming ? (
+            <InputGroupButton
+              type="button"
+              size="sm"
+              variant="default"
+              onClick={onStop}
+              className="ml-auto gap-1.5"
+              aria-label="Stop generating"
+            >
+              <Square className="h-3 w-3 fill-current" />
+              Stop
+            </InputGroupButton>
+          ) : (
+            <InputGroupButton
+              type="submit"
+              size="sm"
+              variant="default"
+              disabled={locked || !text.trim()}
+              className="ml-auto gap-1.5"
+              aria-label="Send"
+            >
+              Send
+              <ArrowUp className="h-3.5 w-3.5" />
+            </InputGroupButton>
+          )}
+        </InputGroupAddon>
+      </InputGroup>
     </form>
   );
 }
